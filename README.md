@@ -92,18 +92,115 @@ As I've mentioned, each server communicates using remote procedure calls and imp
 defines two types of RPCs. RequestVote RPCs are initiated by candidates during elections  and Append-Entries 
 RPCs are initiated by leaders to replicate log entries and to provide a form of a heartbeat.
 
-Rocinante gRPC interface uses none blocking semantics to communicate between each node in a cluster, and between client 
-servers,  rocinante also leverage separate goroutine and for heartbeat channel, communication to external cliennts,
-internal communication for commit channels.
+Rocinante gRPC interface uses none blocking semantics to communicate between each node in a cluster, 
+and between client servers,  rocinante also leverage separate goroutine and concurrency for heartbeat channel, 
+internal and external communication to external clients, internal communication for commit channels.
 
-In the current list of todo, I have the plan to add an ingress buffer channel to absorb a small amount of gRPC messages.    
-Essentially, during transmit and receive routine, server doesn't hold the lock to process RPC message as quickly as 
-it can, but as soon as the server start processing, it must hold a lock.  So one idea creates a buffered 
-channel to sink RPC message.  
+In the current list of mus do, I have the plan to add an ingress buffer channel to absorb a small 
+amount of gRPC messages.  Essentially, during transmit and receive routine, server doesn't hold the lock to process 
+RPC message as quickly as it can, but as soon as the server start processing, it must hold a lock.  
+So one idea creates a buffered channel to sink RPC message and marginalize blocking during event 
+processing.
+
+During initial handshake, voting procedure or delayed or partial communication that triggers the election process,  
+server declares itself a candidate begin a concurrent communication to other peers.
 
 
-## Storage
+## Log and Storage
  
 At current state, system support in-memory storage that provides fast O(1) access to key value pair 
 or persistent storage interface.  The current semantics doesn't use an optimized IO layer and 
-leverage go gob library to serialize data to persistent storage.
+leverage gob library to serialize data to persistent storage.
+
+Rocinante adjusted the original a log format and replaced original command with key-value pair instead. 
+In original RAF semantics in The leader appends the command to its log as a new entry, then issues
+AppendEntries RPCs in parallel to each of the other servers  replicate the entry. When the entry has been safely 
+replicated (as described below), the leader applies the entry to its state machine and returns the result of that 
+execution to the client,  from here we can observe that we can apply the same semantic for any tree-based data 
+structure since the entire process is deterministic and same key and value can be applied simultaneously on N 
+number of the server since the entire point of consensus to have common agreement on value. 
+
+## Snapshoot
+
+TBD.
+
+## API and load balancer.
+
+* Each node in cluster provider REST API and gRPC interface.  
+
+### Cluster discovery
+
+* Each node in the cluster responds to a subset of REST API that doesn't require a cluster leader role. For example, 
+since all cluster members form a full mesh of communication, we can observer the status of socket communication 
+from any node in the cluster. Note GPRC also provides a semantic where the client side of GRPC will automatically 
+reconnect. That way, Rocinante never remove client peer from the list of all peers. 
+
+So the server always knows a total number of peers in cluster and the number of peers with a stable ready state 
+connection.   For example in steady-state if we check each node in a cluster, we will see that all nodes connected 
+in full mesh.
+
+The same if two out of five nodes will disappear and partition a cluster, we will see that two clients connected 
+to two other peers are disconnected as well. We can use this property due to the nature of bi-directional 
+communication.  We can also use heuristic on client side and detect partition case.  For example if client see
+that two out of five peers connected.
+
+* Each node regularly updates a leader cache upon arrival RPC message. Note that leader ID consulted with the 
+state itself. Rocinante provides a rest API client that encapsulates an API interaction; during initial communication, 
+the client might not necessarily know about all peers in cluster nor assume about a current leadership role. 
+
+During REST API client object creation, the API rest-client uses Node Discovery, to update or retrieve the current 
+leader node endpoint. It issues the REST API call to discover who is a leader of the cluster, rest api server end point. 
+As part of the initial handshake, the client determines a REST API endpoint that requires API communication based 
+on the initial sequence. As part of discovery, the client also gets the full status of all peers.  
+So in the case of a partial communication inside a cluster, the client can observe disconnected nodes.  
+
+The primary motivation is to minimize and reduce the client-side configuration required for each client.  
+It should also be sufficient to re-point a client to any IP address of a node in thee cluster.
+
+Meanwhile, Rocinante leaves to the implementer of application logic optimization related to the number 
+of interactions to a server. One example, the client might cache the existing leader id that will minimize 
+the number of calls to a server and round trip,  and the client can reset the leader ID only when the node 
+responds that is not a leader anymore or node status changed, or election term changed.  
+
+
+##3 timers add description
+
+##3 load balancer logic add description
+
+```
+artifact:
+  cleanupOnFailure: true
+  cluster:
+    name: test
+    controllers:
+      - address: 127.0.0.1
+        port: 35001
+        rest: 8001
+        wwwroot: /Users/spyroot/go/src/github.com/spyroot/rocinante/pkg/template/
+      - address: 127.0.0.1
+        port: 35002
+        rest: 8002
+        wwwroot: /Users/spyroot/go/src/github.com/spyroot/rocinante/pkg/template/
+      - address: 127.0.0.1
+        port: 35003
+        rest: 8003
+        wwwroot: /Users/spyroot/go/src/github.com/spyroot/rocinante/pkg/template/
+  pool:
+    name: test
+    # we indicate only one ip and let rest client discover cluster leader
+    api:
+      - address: 127.0.0.1
+        rest: 8001
+        grpc: 35001
+    servers:
+      - address: 127.0.0.1
+        port: 8887
+      - address: 127.0.0.1
+        port: 8888
+      - address: 127.0.0.1
+        port: 8889
+  global:
+```
+
+
+![Image of webserver](https://octodex.github.com/images/yaktocat.png)
