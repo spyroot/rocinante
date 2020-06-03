@@ -1,0 +1,32 @@
+artifact:
+  cleanupOnFailure: true
+  cluster:
+    name: test
+    controllers:
+      - address: 127.0.0.1
+        port: 35001
+        rest: 8001
+        wwwroot: /Users/spyroot/go/src/github.com/spyroot/rocinante/pkg/template/
+      - address: 127.0.0.1
+        port: 35002
+        rest: 8002
+        wwwroot: /Users/spyroot/go/src/github.com/spyroot/rocinante/pkg/template/
+      - address: 127.0.0.1
+        port: 35003
+        rest: 8003
+        wwwroot: /Users/spyroot/go/src/github.com/spyroot/rocinante/pkg/template/
+  pool:
+    name: test
+    # we indicate only one ip and let rest client discover cluster leader
+    api:
+      - address: 127.0.0.1
+        rest: 8001
+        grpc: 35001
+    servers:
+      - address: 127.0.0.1
+        port: 8887
+      - address: 127.0.0.1
+        port: 8888
+      - address: 127.0.0.1
+        port: 8889
+  global:
