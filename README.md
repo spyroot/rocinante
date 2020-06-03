@@ -202,5 +202,4 @@ artifact:
   global:
 ```
 
-
-![Image of webserver](https://octodex.github.com/images/yaktocat.png)
+![Image of webserver](https://github.com/spyroot/rocinante/blob/master/images/web.png)
