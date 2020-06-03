@@ -4,6 +4,9 @@
     <meta charset="UTF-8">
     <title>Status</title>
 </head>
+
+<script src="http://cdn.zoomcharts-cloud.com/1/latest/zoomcharts.js"></script>
+
 <!-- CSS only -->
 <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/css/bootstrap.min.css"
       integrity="sha384-9aIt2nRpC12Uk9gS9baDl411NQApFmC26EwAOH8WgZl5MYYxFfc+NcPb1dKGj7Sk" crossorigin="anonymous">
@@ -18,33 +21,133 @@
 <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.5.0/js/bootstrap.min.js"
         integrity="sha384-OgVRvuATP1z7JjHLkuOU7Xw704+h835Lr+6QL9UvYjZE3Ipu6Tp75j7Bh/kR0JKI"
         crossorigin="anonymous"></script>
-<body>
-<h1 class="">{{.PageTitle}}</h1>
 
-<div class="container bg-dark text-white">
-    <div class="p-3 mb-2 bg-dark text-white">
-        <table class="table table-dark">
-            <thead>
-            <tr>
-                <th scope="col" class="ServerID">Server ID</th>
-                <th scope="col">Role</th>
-                <th scope="col">Current term</th>
-                <th scope="col">Last updated</th>
-            </tr>
-            {{range .ServerStatus}}
-                {{if .ServerID}}
-                    <tr>
-                        <th scope="row" class="ServerID">{{.Title}}</th>
-                        <th scope="row">First</th>
-                        <th scope="row">Last</th>
-                        <th scope="row">Handle</th>
-                    </tr>
-                {{end}}
-            {{end}}
-            </thead>
+<script src="https://cdn.zoomcharts-cloud.com/1/latest/zoomcharts.js" crossorigin="anonymous">
+</script>
+
+<body>
+
+<nav class="navbar navbar-expand-md navbar-dark bg-dark mb-3">
+    <div class="container-fluid">
+        <a href="#" class="navbar-brand mr-3">Rocinante</a>
+        <button type="button" class="navbar-toggler" data-toggle="collapse" data-target="#navbarCollapse">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarCollapse">
+            <div class="navbar-nav">
+                <a href="#" class="nav-item nav-link active">Home</a>
+                <a href="/log" class="nav-item nav-link">Log</a>
+                <a href="#" class="nav-item nav-link">placehoder</a>
+                <a href="#" class="nav-item nav-link">Contact</a>
+            </div>
+            <div class="navbar-nav ml-auto">
+                <a href="#" class="nav-item nav-link">Login</a>
+            </div>
+        </div>
     </div>
+</nav>
+
+
+<div class="container-fluid">
+    <div class="jumbotron">
+        <h5>Server status</h5>
+        <div id="chart"></div>
+        <br>
+        <table class="table table-sm">
+            <thead class="thead-dark">
+            <tr>
+                <th scope="col">#</th>
+                <th scope="col">server</th>
+                <th scope="col">server id</th>
+                <th scope="col">role</th>
+                <th scope="col">term</th>
+                <th scope="col">last update</th>
+            </tr>
+            </thead>
+            <tbody>
+            {{range .ServerStatus}}
+            <tr>
+                <th scope="row"></th>
+                <th>{{.ServerBind}}</th>
+                <td>{{.ServerID}}</td>
+                <td>{{.Role}}</td>
+                <td>{{.Term}}</td>
+                <td>{{.LastUpdate}}</td>
+            </tr>
+            {{end}}
+            </tbody>
+        </table>
+      </div>
+
+    <div class="row">
+
+    </div>
+
+    <hr>
+    <footer>
+        <div class="row">
+            <div class="col-md-6">
+                <p>Copyright &copy; 2020 Tutorial Republic</p>
+            </div>
+            <div class="col-md-6 text-md-right">
+                <a href="#" class="text-dark">Terms of Use</a>
+                <span class="text-muted mx-2">|</span>
+                <a href="#" class="text-dark">Privacy Policy</a>
+            </div>
+        </div>
+    </footer>
 </div>
 
 </body>
 </html>
 
+<script>
+    var nodesArray = [
+        '&#xf179;',
+        '&#xf268;',
+        '&#xf282;',
+        '&#xf108;',
+        '&#xf109;',
+        '&#xf11c;',
+        '&#xf007;',
+        '&#xf17a;',
+        '&#xf07c;',
+        '&#xf02f;',
+        '&#xf1c0;',
+
+    ];
+
+    var linksArray = [
+        '&#xf135;',
+        '&#xf0c4;',
+        '&#xf293;',
+        '&#xf0ee;',
+        '&#xf1eb;',
+        '&#xf119;',
+        '&#xf164;',
+        '&#xf127;'
+    ];
+
+    var t = new NetChart({
+        container: document.getElementById("chart"),
+        area: { height: 350 },
+        data: {
+            preloaded: {
+                nodes: [
+                        {{range .ServerStatus}}
+                            { id: {{.ServerBind}} },
+                        {{end}}
+                ],
+                links: [
+                       {{ $status:= .ServerStatus }}
+                         {{ range $s := $status}}
+                            {{ range $c := $s.Connected }}
+                                 { id: "{{$s.ServerBind}}-{{$c.ServerNei}}", from: {{$s.ServerBind}}, to: {{$c.ServerNei}}},
+                       {{end}}
+                    {{end}}
+                ]
+            }
+        },
+        interaction: { selection: { lockNodesOnMove: false } }
+    });
+</script>

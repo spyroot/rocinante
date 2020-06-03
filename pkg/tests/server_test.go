@@ -1,13 +1,19 @@
+/***
+
+	on going work.
+   Mustafa Bayramov
+*/
 package tests
 
 import (
-	"../server"
 	"flag"
 	"log"
 	"net"
 	"net/http"
 	"testing"
 	"time"
+
+	"../server"
 )
 
 // return if a tcp/udp port is free to use
@@ -28,27 +34,23 @@ func generateId(address string, port string) string {
 	return address + ":" + port
 }
 
-// usage for rocinante
+//	mainly to make glog happy
 func usage() {
-	//_, _ = fmt.Fprintf(os.Stderr, "usage: example -stderrthreshold=[INFO|WARNING|FATAL] -log_dir=[string]\n")
-	//flag.PrintDefaults()
-
 }
 
+/**
+mainly to make glog happy
+*/
 func init() {
 	log.Printf("test")
 	flag.Usage = usage
 	flag.Set("test.v", "true")
 
-	//_ = flag.Set("logtostderr", "true")
-	//_ = flag.Set("stderrthreshold", "WARNING")
-	//_ = flag.Set("v", "2")
-	//flag.Parse()
 }
 
 /**
-
- */
+Simple leader election.
+*/
 func TestLeaderElection(t *testing.T) {
 
 	type args struct {
@@ -154,7 +156,7 @@ func TestLeaderElection(t *testing.T) {
 
 	Note if run all test at same time,  TCP stack need release all ports.
 
- */
+*/
 func TestLeaderElection2(t *testing.T) {
 
 	type args struct {
@@ -293,8 +295,6 @@ func TestLeaderElection2(t *testing.T) {
 		s.Shutdown()
 	}
 }
-
-
 
 /**
     Test start 3 server,  fail one and check re-election , re-add back
@@ -476,7 +476,6 @@ func TestLeaderElection3(t *testing.T) {
 	t.Log("Done.")
 }
 
-
 func checLeader(t *testing.T, repeat int, timeout time.Duration, servers []*server.Server) (bool, uint64) {
 
 	var converged bool = false
@@ -530,7 +529,6 @@ func checLeader(t *testing.T, repeat int, timeout time.Duration, servers []*serv
 	return true, current_leader
 }
 
-
 // return leader
 func getLeader(t *testing.T, repeat int, timeout time.Duration, servers []*server.Server) *server.Server {
 
@@ -567,7 +565,6 @@ func getLeader(t *testing.T, repeat int, timeout time.Duration, servers []*serve
 
 	return nil
 }
-
 
 /**
     Test start 3 server,  fail one and check re-election , re-add back

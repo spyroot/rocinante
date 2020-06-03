@@ -1,12 +1,9 @@
 package main
 
 import (
-	pb "../../../api"
-	"context"
-	"google.golang.org/grpc"
-	"log"
-	"os"
-	"time"
+	"../../client"
+	"github.com/apex/log"
+	"github.com/golang/glog"
 )
 
 const (
@@ -16,26 +13,19 @@ const (
 
 func main() {
 	// Set up a connection to the server.
-	conn, err := grpc.Dial(address, grpc.WithInsecure(), grpc.WithBlock())
+	apiClient, err := client.NewRestClientFromUrl("http://localhost:8001")
 	if err != nil {
-		log.Fatalf("did not connect: %v", err)
+		log.Fatal(err.Error())
+		return
 	}
-	defer conn.Close()
 
-	c := pb.RaftClient(conn)
-	// Contact the server and print out its response.
-	name := defaultName
-	if len(os.Args) > 1 {
-		name = os.Args[1]
+	peerStatus, err := apiClient.GetPeerList()
+	if err != nil {
+		log.Fatal(err.Error())
+		return
 	}
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		defer cancel()
-		r, err := c.Ping(ctx, &pb.PingMessage{Name: name})
-		if err != nil {
-			log.Fatalf("could not greet: %v", err)
-		}
-		log.Printf("Greeting: %s", r.GetMessage())
-		time.Sleep(1 * time.Second)
+
+	for _, p := range peerStatus {
+		glog.Infof("%v", p)
 	}
 }

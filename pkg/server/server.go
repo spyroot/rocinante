@@ -16,10 +16,9 @@ import (
 )
 
 /**
-	Server spec describe all api binding points
- */
+Server spec describe all api binding points
+*/
 type ServerSpec struct {
-
 	RaftNetworkBind string
 	RestNetworkBind string
 	GrpcNetworkBind string
@@ -66,8 +65,10 @@ type Server struct {
 
 	// hold peers grpc end points
 	peers []string
+
 	// a map that store each server bind ip:port and respected server id hash
 	peersHash map[string]uint64
+
 	// a map hold all grpc connection to each server, a key is hash id
 	peerClient map[uint64]*grpc.ClientConn
 	// a slice that hold a server spec,  rest interface bind / base dir / log dir etc
@@ -89,8 +90,6 @@ type Server struct {
 	pb.RequestVote
 	pb.AppendEntries
 	pb.PingMessage
-
-
 }
 
 /**
@@ -131,7 +130,7 @@ func (s *Server) RequestVoteCall(ctx context.Context, vote *pb.RequestVote) (*pb
 
 /*
 	Return last seen leader
- */
+*/
 func (s *Server) LastLeader() (*ServerSpec, uint64, bool) {
 
 	for k, v := range s.peersHash {
@@ -151,7 +150,7 @@ func (s *Server) LastLeader() (*ServerSpec, uint64, bool) {
 /**
 	A loop that continuously reads from commit channel and submit
     data to storage.  persistent on or memory
- */
+*/
 func (s *Server) ReadCommits() {
 
 	timeout := make(chan bool, 1)
@@ -163,12 +162,12 @@ func (s *Server) ReadCommits() {
 	}()
 
 	var ok = false
-	for ok != true  {
+	for ok != true {
 		select {
-		case c := <- s.commitProducer:
+		case c := <-s.commitProducer:
 			glog.Infof("received from channel commit.", c.Index)
 			s.db.Set(c.Command.Key, c.Command.Value)
-		case  <- timeout:
+		case <-timeout:
 			glog.Infof("read from channel timeout.")
 			ok = true
 		}
@@ -236,7 +235,6 @@ func (s *Server) AppendEntriesCall(ctx context.Context, req *pb.AppendEntries) (
 //
 //	return commits, nil
 //}
-
 
 /**
 
@@ -337,18 +335,22 @@ func (s *Server) ServerID() uint64 {
 /*
 
  */
-func (s *Server)  RaftState() *RaftProtocol {
+func (s *Server) RaftState() *RaftProtocol {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	return s.raftState
 }
 
+func (s *Server) GetPeerID(bind string) uint64 {
+	return hash(bind)
+}
+
 /**
-   Create a new server, upon success method returns a pointer to a server.
-   - serverSpec must hold local server specs.
-   - peers must holds all other peer specs.
-   - port is bind address.
- */
+  Create a new server, upon success method returns a pointer to a server.
+  - serverSpec must hold local server specs.
+  - peers must holds all other peer specs.
+  - port is bind address.
+*/
 func NewServer(serverSpec ServerSpec, peers []ServerSpec, port string, ready <-chan interface{}) (*Server, error) {
 
 	s := new(Server)
@@ -356,6 +358,10 @@ func NewServer(serverSpec ServerSpec, peers []ServerSpec, port string, ready <-c
 	s.serverBind = serverSpec.RaftNetworkBind
 	s.serverSpec = serverSpec
 	s.isDead = false
+
+	if len(peers) == 0 {
+		log.Fatal("Error", len(peers))
+	}
 
 	glog.Infof("[rpc server handler] Server %v id %v", serverSpec.RaftNetworkBind, s.serverId)
 
@@ -375,9 +381,6 @@ func NewServer(serverSpec ServerSpec, peers []ServerSpec, port string, ready <-c
 	s.ready = ready
 	s.quit = make(chan interface{})
 
-	if len(peers) > 3 {
-		log.Fatal("Error", len(peers))
-	}
 	var err error
 	s.commitProducer = make(chan CommitEntry, 32)
 
@@ -425,11 +428,11 @@ func (s *Server) Start() error {
 	var entries []CommitEntry
 
 	for c := range commitChans {
-//		pong(raft.commitChan, pongs)
+		//		pong(raft.commitChan, pongs)
 		entries = append(entries, c)
 	}
 
-//	s.rest, err = NewRestfulServer(s, s.serverSpec.RestNetworkBind, serverSpec.Basedir)
+	//	s.rest, err = NewRestfulServer(s, s.serverSpec.RestNetworkBind, serverSpec.Basedir)
 	s.isDead = false
 
 	// close ready channel and signal to raft to start fsm
@@ -445,9 +448,9 @@ func (s *Server) Start() error {
 }
 
 /**
-    Create a listener used by grpc, rocinante uses tcp to communicate
-    between peers
- */
+  Create a listener used by grpc, rocinante uses tcp to communicate
+  between peers
+*/
 func (s *Server) createListener() (net.Listener, error) {
 
 	if s == nil {
@@ -472,12 +475,12 @@ func (s *Server) createListener() (net.Listener, error) {
 }
 
 /**
-    Creates all peer connection between all node in cluster.
-    Each connection in a separate go routine and each connection added to peer list.
+  Creates all peer connection between all node in cluster.
+  Each connection in a separate go routine and each connection added to peer list.
 
-    Method create GRPC listener and bind to protobuf to it
-    At the method will block and wait for a signal to shutdown.
- */
+  Method create GRPC listener and bind to protobuf to it
+  At the method will block and wait for a signal to shutdown.
+*/
 func (s *Server) Serve() error {
 
 	if s == nil {
@@ -538,7 +541,7 @@ func (s *Server) Serve() error {
 
 /*
    Returns a peer connection based on node id.
- */
+*/
 func (s *Server) getPeer(peerID uint64) (*grpc.ClientConn, bool) {
 
 	if s == nil {
@@ -561,7 +564,7 @@ func (s *Server) getPeer(peerID uint64) (*grpc.ClientConn, bool) {
 
    The idea here we want be able provide alternative option for node to communicate.
    For example if we decide to choose later alternative protocol.
- */
+*/
 func (s *Server) RemoteCall(peerID uint64, args interface{}) (interface{}, error) {
 
 	if s == nil {
@@ -631,9 +634,9 @@ func (s *Server) RESTEndpoint() ServerSpec {
 }
 
 /*
-    Shutdown a server and gracefully signal to RAFT protocol
-    to shutdown
- */
+   Shutdown a server and gracefully signal to RAFT protocol
+   to shutdown
+*/
 func (s *Server) Shutdown() {
 
 	if s == nil {
@@ -652,4 +655,16 @@ func (s *Server) Shutdown() {
 	s.raftState.Shutdown()
 	s.rpc.Stop()
 	close(s.quit)
+}
+
+//
+func (s *Server) PeerStatus() map[uint64]string {
+
+	connStatus := make(map[uint64]string)
+
+	for k, v := range s.peerClient {
+		connStatus[k] = v.GetState().String()
+	}
+
+	return connStatus
 }

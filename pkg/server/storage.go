@@ -3,20 +3,17 @@ package server
 import "sync"
 
 /**
-	Generic interface for storage
- */
+Generic interface for storage
+*/
 type Storage interface {
-
 	Set(key string, value []byte)
 	Get(key string) ([]byte, bool)
-
-	// HasData returns true iff any Sets were made on this Storage.
 	HasData() bool
 }
 
 /**
   In memory storage
- */
+*/
 type VolatileStorage struct {
 	mu sync.Mutex
 	m  map[string][]byte
@@ -24,7 +21,7 @@ type VolatileStorage struct {
 
 func NeInMemory() *VolatileStorage {
 	m := make(map[string][]byte)
-	return &VolatileStorage{m: m,}
+	return &VolatileStorage{m: m}
 }
 
 func (ms *VolatileStorage) Get(key string) ([]byte, bool) {
