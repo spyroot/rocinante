@@ -3,7 +3,7 @@
 	The implementation follow original paper
 
 	Mustafa Bayramov
- */
+*/
 package server
 
 import (
@@ -43,7 +43,7 @@ const (
 
 type RaftProtocol struct {
 
-	// mu protects concurrent access to a CM.
+	// mutex protects concurrent access to a CM.
 	mu sync.Mutex
 
 	// pointer to this server
@@ -65,21 +65,21 @@ type RaftProtocol struct {
 	stateLog    []*pb.LogEntry
 
 	// Volatile Raft state on all servers
-	state              ProtocolState
+	state ProtocolState
 
 	electionResetEvent time.Time
 
 	// for each server, index of next log entry
-	nextIndex  map[uint64]uint64
+	nextIndex map[uint64]uint64
 	// for each server, index of highest log entry
 	matchIndex map[uint64]uint64
 
 	// introduce variable jitter for unit testing
 	Jitter bool
 	// make this server force election process
-	Force  bool // force elect
+	Force bool // force elect
 	// simulate random packet drop
-	Drop   bool
+	Drop bool
 
 	// channel where we signal about commit
 	// we use same concept for 2pc protocol
@@ -87,7 +87,7 @@ type RaftProtocol struct {
 	// we than send commit msg on another channel , when we collect majority
 	// we write to commit ready
 	commitReadyChan chan CommitReady
-	commitChan chan <- CommitEntry
+	commitChan      chan<- CommitEntry
 
 	//commitChan chan CommitEntry
 
@@ -231,9 +231,9 @@ func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntrie
 
 			// Send data commit index to a buffer
 			if req.LeaderCommit > raft.volatileState.CommitIndex() {
-				raft.volatileState.setCommitIndex(intMin(req.LeaderCommit, uint64(len(raft.stateLog) - 1)))
+				raft.volatileState.setCommitIndex(intMin(req.LeaderCommit, uint64(len(raft.stateLog)-1)))
 				raft.log("... setting commitIndex=%d", raft.volatileState.CommitIndex())
-				raft.commitReadyChan <- CommitReady {
+				raft.commitReadyChan <- CommitReady{
 					Term: oldTerm,
 				}
 			}
@@ -271,10 +271,10 @@ func (s ProtocolState) String() string {
 
  */
 func NewRaftProtocol(id uint64,
-				peers map[string]uint64,
-				server *Server, numPeer int,
-				ready <-chan interface{},
-				commitChan chan<- CommitEntry) (*RaftProtocol, error) {
+	peers map[string]uint64,
+	server *Server, numPeer int,
+	ready <-chan interface{},
+	commitChan chan<- CommitEntry) (*RaftProtocol, error) {
 
 	raft := new(RaftProtocol)
 	raft.numberPeers = numPeer
@@ -330,14 +330,14 @@ func (raft *RaftProtocol) log(format string, args ...interface{}) {
 func (raft *RaftProtocol) electionTimeout() time.Duration {
 	if raft.Drop == false {
 		if raft.Jitter == true {
-		return time.Millisecond * time.Duration((HEARBEAT_INTERVAL * 3 ) + rand.Intn(HEARBEAT_INTERVAL * 3))
+			return time.Millisecond * time.Duration((HEARBEAT_INTERVAL*3)+rand.Intn(HEARBEAT_INTERVAL*3))
 		} else {
-		return time.Millisecond * time.Duration(HEARBEAT_INTERVAL * 3)
+			return time.Millisecond * time.Duration(HEARBEAT_INTERVAL*3)
 		}
 	} else {
- 		 // sleep and than respond
-		 time.Sleep(60 * time.Second)
- 		 return time.Millisecond * time.Duration(HEARBEAT_INTERVAL * 3)
+		// sleep and than respond
+		time.Sleep(60 * time.Second)
+		return time.Millisecond * time.Duration(HEARBEAT_INTERVAL*3)
 	}
 }
 
@@ -376,7 +376,7 @@ func (raft *RaftProtocol) getState() (uint64, ProtocolState, time.Time) {
 }
 
 /**
-	Return true if election timer expired.
+Return true if election timer expired.
 */
 func (raft *RaftProtocol) isElectionReset(duration time.Duration) bool {
 	raft.mu.Lock()
@@ -459,7 +459,6 @@ func (raft *RaftProtocol) gotVote(currentTerm uint64, votes uint64, reply *Reque
 	return votes
 }
 
-
 /**
 
  */
@@ -470,8 +469,8 @@ func (raft *RaftProtocol) newTerm() {
 }
 
 /**
-	Method return last last long index and term
- */
+Method return last last long index and term
+*/
 func (raft *RaftProtocol) lastLogIndexAndTerm() (uint64, uint64) {
 
 	raft.mu.Lock()
@@ -545,7 +544,7 @@ func (raft *RaftProtocol) startElection() {
 				raft.mu.Lock()
 				votesReceived = updateVotes
 				raft.log("collected %d votes", votesReceived)
-				if int(votesReceived) * 2 > raft.numberPeers + 1 {
+				if int(votesReceived)*2 > raft.numberPeers+1 {
 					raft.log("wins election with %d votes", votesReceived)
 					raft.mu.Unlock()
 					raft.startLeader()
@@ -560,7 +559,7 @@ func (raft *RaftProtocol) startElection() {
 
 /*
 	Method switch a state of node in cluster to a follower
- */
+*/
 func (raft *RaftProtocol) makeFollower(term uint64) {
 	raft.log("Attempting become a follower for term=%d", term)
 	raft.mu.Lock()
@@ -602,7 +601,7 @@ func (raft *RaftProtocol) makeLeader() {
 }
 
 // startLeader switches cm into a leader state and begins process of heartbeats.
-// Expects cm.mu to be locked.
+// Expects cm.mutex to be locked.
 func (raft *RaftProtocol) startLeader() {
 
 	raft.makeLeader()
@@ -628,7 +627,7 @@ func (raft *RaftProtocol) startLeader() {
 	matchIndex is highest log entry know to be replicated
 	and it increase monotonically.
 	Method countMatchIndex log entry id for each peer.
- */
+*/
 func (raft *RaftProtocol) countMatchIndex(i uint64) int {
 	count := 0
 	for _, peer := range raft.peers {
@@ -648,7 +647,7 @@ func (raft *RaftProtocol) readCurrentTerm() uint64 {
 
 /*
 	Broadcast msg issue AppendEntriesReply to remote peer.
- */
+*/
 func (raft *RaftProtocol) broadcastMsg(peer uint64, term uint64) error {
 
 	raft.mu.Lock()
@@ -674,7 +673,7 @@ func (raft *RaftProtocol) broadcastMsg(peer uint64, term uint64) error {
 	}
 
 	// send gRPC call and we DON'T hold a lock.
-	raft.log("%v sending append entries -> peer %v: ni=%d, args=%+v", color.Red + myState.String() + color.Reset, peer, 0, appendEntry)
+	raft.log("%v sending append entries -> peer %v: ni=%d, args=%+v", color.Red+myState.String()+color.Reset, peer, 0, appendEntry)
 	rpcReply, err := raft.server.RemoteCall(peer, appendEntry)
 	if err != nil {
 		raft.log("invalid respond to an rpc call peer %v: nextIndex=%d, args=%+v err=[%+v]", peer, 0, appendEntry, err)
@@ -696,7 +695,7 @@ func (raft *RaftProtocol) broadcastMsg(peer uint64, term uint64) error {
 
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
-	// i'm leader and term are matched
+	// i'storage leader and term are matched
 	if raft.state == Leader && term == replay.Term {
 		if replay.Success {
 			raft.nextIndex[peer] = nextIndex + uint64(len(entries))
@@ -711,21 +710,21 @@ func (raft *RaftProtocol) broadcastMsg(peer uint64, term uint64) error {
 				}
 
 				matchCount := raft.countMatchIndex(i) + 1
-				if matchCount * 2 > raft.numberPeers + 1 {
+				if matchCount*2 > raft.numberPeers+1 {
 					raft.volatileState.setCommitIndex(i)
 				}
 			}
 
 			if raft.volatileState.CommitIndex() != savedCommitIndex {
-				raft.log("%v sets commitIndex := %d", 
-					color.Red + myState.String() + color.Reset, raft.volatileState.CommitIndex())
-				raft.commitReadyChan <- CommitReady {
+				raft.log("%v sets commitIndex := %d",
+					color.Red+myState.String()+color.Reset, raft.volatileState.CommitIndex())
+				raft.commitReadyChan <- CommitReady{
 					Term: term,
 				}
 			}
 		} else {
 			raft.nextIndex[peer] = nextIndex - 1
-			raft.log("AppendEntries rpcReply from %d !success: nextIndex := %d", peer, nextIndex- 1)
+			raft.log("AppendEntries rpcReply from %d !success: nextIndex := %d", peer, nextIndex-1)
 		}
 	}
 
@@ -763,7 +762,7 @@ func (raft *RaftProtocol) Status() (id uint64, term uint64, isLeader bool) {
 }
 
 /**
-	Dumps entire log, it mainly for debug purpose.
+Dumps entire log, it mainly for debug purpose.
 */
 func (raft *RaftProtocol) getLog() []*pb.LogEntry {
 	raft.mu.Lock()
@@ -772,7 +771,7 @@ func (raft *RaftProtocol) getLog() []*pb.LogEntry {
 }
 
 /**
-   Submit a log entry as key value pair to log
+  Submit a log entry as key value pair to log
 */
 func (raft *RaftProtocol) Submit(kv *pb.KeyValuePair) bool {
 	raft.mu.Lock()
@@ -792,7 +791,7 @@ func (raft *RaftProtocol) Submit(kv *pb.KeyValuePair) bool {
 }
 
 /**
-	Shutdown raft sub-system
+Shutdown raft sub-system
 */
 func (raft *RaftProtocol) Shutdown() {
 	raft.mu.Lock()
@@ -805,7 +804,7 @@ func (raft *RaftProtocol) Shutdown() {
 /**
  	Read from ready channel all msg that committed
 	serialize to fun out
- */
+*/
 func (raft *RaftProtocol) commitChannel() {
 
 	go func() {
@@ -819,7 +818,7 @@ func (raft *RaftProtocol) commitChannel() {
 			if raft.volatileState.CommitIndex() > raft.volatileState.LastApplied() ||
 				raft.volatileState.LastApplied() == math.MaxUint64 {
 				// set low and high.
-				committedEntries = raft.stateLog[raft.volatileState.LastApplied() + 1 : raft.volatileState.CommitIndex() + 1]
+				committedEntries = raft.stateLog[raft.volatileState.LastApplied()+1 : raft.volatileState.CommitIndex()+1]
 				raft.volatileState.setLastApplied(raft.volatileState.CommitIndex())
 			}
 
@@ -828,9 +827,9 @@ func (raft *RaftProtocol) commitChannel() {
 
 			// for each committed log entry
 			for i, e := range committedEntries {
-				raft.log("Pushing to a channel commit index=%d", oldLastApplied+ uint64(i) + 1)
+				raft.log("Pushing to a channel commit index=%d", oldLastApplied+uint64(i)+1)
 				e.GetCommand()
-				raft.commitChan <- CommitEntry {
+				raft.commitChan <- CommitEntry{
 					Command: KeyValuePair{Key: e.Command.Key, Value: e.Command.Value},
 					Index:   oldLastApplied + uint64(i) + 1,
 					Term:    currentTerm,

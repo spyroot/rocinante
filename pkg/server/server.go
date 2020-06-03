@@ -15,6 +15,8 @@ import (
 	"google.golang.org/grpc"
 )
 
+// TODO add to peer list respond with server spec for auto discovery.
+
 /**
 Server spec describe all api binding points
 */
