@@ -61,8 +61,8 @@ func NewRestClient(peers []string) (*RestClient, error) {
 }
 
 /**
-
- */
+Return a new client , initialized from url
+*/
 func NewRestClientFromUrl(e string) (*RestClient, error) {
 
 	c := new(RestClient)
@@ -271,7 +271,7 @@ func (r *RestClient) GetPeerList() (map[string]map[uint64]server.PeerStatus, err
 /**
 REST call to retrieve value from a server
 */
-func (r *RestClient) Get(key string) (*http.Response, error) {
+func (r *RestClient) Get(key string) (*server.ValueRespond, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultHttpTimeout*time.Millisecond)
 	defer cancel()
@@ -298,9 +298,25 @@ func (r *RestClient) Get(key string) (*http.Response, error) {
 		return nil, fmt.Errorf("failed retieve value %v", err)
 	}
 
+	var respond server.ValueRespond
+	respond.Success = false
 	if resp.StatusCode == http.StatusOK {
 		glog.Infof("Got back status %v", resp.StatusCode)
-		return resp, nil
+		// decode
+		decoder := json.NewDecoder(resp.Body)
+		err = decoder.Decode(&respond)
+		if err != nil {
+			glog.Infof("Failed decode respond", err)
+		}
+
+		sDec, err := b64.StdEncoding.DecodeString(string(respond.Value))
+		if err != nil {
+			glog.Infof("Failed decode base64 respond", err)
+		}
+
+		respond.Value = sDec
+		glog.Infof(" received respond %v", respond)
+		return &respond, nil
 	}
 
 	glog.Infof("Got back status %v", resp.StatusCode)

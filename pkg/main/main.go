@@ -13,16 +13,6 @@ import (
 	"github.com/golang/glog"
 )
 
-//
-//var ports = map[int]string{
-//	0: ":50051",
-//	1: ":50052",
-//	2: ":50053",
-//}
-
-// return if a tcp/udp port is free to use
-//
-
 // generate server id
 func generateId(address string, port string) string {
 	return address + ":" + port

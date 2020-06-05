@@ -178,8 +178,8 @@ func (s *Server) LastLeader() (*ServerSpec, uint64, bool) {
 }
 
 /**
-	A loop that continuously reads from commit channel and submit
-    data to storage.  persistent on or memory
+	A commit loop that continuously reads from commit channel and submit
+    data to in memory or persistent storage.  persistent on or memory
 */
 func (s *Server) ReadCommits() {
 
@@ -191,50 +191,43 @@ func (s *Server) ReadCommits() {
 		timeout <- true
 	}()
 
+	//var ok = false
 	for {
+		select {
+		case c := <-s.commitProducer:
 
-		var ok = false
-		for ok != true {
-			select {
-			case c := <-s.commitProducer:
+			msg := color.Green + "received from channel commit index" + color.Reset
+			glog.Infof("%s %d", msg, c.Index, c.Command.Key, c.Command.Value)
 
-				msg := color.Green + "received from channel commit index" + color.Reset
-				glog.Infof("%s %d", msg, c.Index, c.Command.Key, c.Command.Value)
-
-				s.db.Set(c.Command.Key, c.Command.Value)
-				val, ok := s.db.Get(c.Command.Key)
-				if ok == false {
-					log.Fatal("Failed to store val", val)
-				}
-
-			case <-timeout:
-				glog.Infof("read from channel timeout.")
-				ok = true
+			s.db.Set(c.Command.Key, c.Command.Value)
+			val, ok := s.db.Get(c.Command.Key)
+			if ok == false {
+				log.Fatal("Failed to store val", val)
 			}
+
+			//case <-timeout:
+			//	glog.Infof("read from channel timeout.")
+			//	ok = true
+			//}
 		}
 	}
 }
 
 /**
-
- */
+A gRPC handler used by proto buffer , triggered upon
+Append Entry call
+*/
 func (s *Server) AppendEntriesCall(ctx context.Context, req *pb.AppendEntries) (*pb.AppendEntriesReply, error) {
-
-	if s == nil {
-		return nil, fmt.Errorf("server uninitialized")
-	}
-
-	if s.isDead {
-		return nil, fmt.Errorf("server in shutdown state")
-	}
 
 	if s == nil {
 		glog.Info("[rpc server handler] server uninitialized")
 		return nil, fmt.Errorf("server uninitilized")
 	}
 
-	//log.Printf("[rpc server handler] recieved")
-	//time.Sleep(time.Duration(1 + rand.Intn(5)) * time.Millisecond)
+	if s.isDead {
+		return nil, fmt.Errorf("server in shutdown state")
+	}
+
 	glog.Infof("[rpc server handler] rx append entries from a leader [%v] term [%v]", req.LeaderId, req.Term)
 	rep, err := s.raftState.AppendEntries(req)
 
@@ -339,7 +332,7 @@ func (s *Server) Ping(ctx context.Context, in *pb.PingMessage) (*pb.PongReply, e
   Simulate different cases.  Note that timer depend on
   timeout and leader election timer
 */
-func (s *Server) SimulateFailure(req *pb.RequestVote) error {
+func (s *Server) SimulateFailure() error {
 
 	if s == nil {
 		return fmt.Errorf("server uninitialized")
@@ -361,8 +354,8 @@ func (s *Server) SimulateFailure(req *pb.RequestVote) error {
 }
 
 /*
-
- */
+  Return this server id
+*/
 func (s *Server) ServerID() uint64 {
 	s.lock.Lock()
 	defer s.lock.Unlock()
@@ -370,14 +363,17 @@ func (s *Server) ServerID() uint64 {
 }
 
 /*
-
- */
+   Return a point to Raft Protocol State, it used for unit test only.
+*/
 func (s *Server) RaftState() *RaftProtocol {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	return s.raftState
 }
 
+/*
+	Return this peer id, as 64 bit hash
+*/
 func (s *Server) GetPeerID(bind string) uint64 {
 	return hash(bind)
 }
@@ -580,7 +576,7 @@ func (s *Server) Serve() error {
 }
 
 /*
-   Returns a peer connection based on node id.
+   Returns a peer grpc connection based on node id.
 */
 func (s *Server) getPeer(peerID uint64) (*grpc.ClientConn, bool) {
 
@@ -665,7 +661,9 @@ func (s *Server) RemoteCall(peerID uint64, args interface{}) (interface{}, error
 	return nil, fmt.Errorf("connect to %d peer closed", peerID)
 }
 
-//
+/*
+  Returns current server rest api end point address
+*/
 func (s *Server) RESTEndpoint() ServerSpec {
 	if s == nil {
 		return ServerSpec{}
@@ -698,8 +696,15 @@ func (s *Server) Shutdown() {
 }
 
 /**
+  Returns in memory storage, it mainly used for unit testing.
+*/
+func (s *Server) GetInMemoryStorage() map[string][]byte {
+	return s.db.GetCopy()
+}
 
- */
+/**
+  Return a peer spec, if peer not found error
+*/
 func (s *Server) getPeerSpec(id uint64) (*ServerSpec, error) {
 
 	for _, v := range s.peerSpec {
@@ -711,7 +716,8 @@ func (s *Server) getPeerSpec(id uint64) (*ServerSpec, error) {
 }
 
 /**
-  Return peer status
+  Returns peer status as map, a key is host id of each server
+  value a is peer spec
 */
 func (s *Server) PeerStatus() map[uint64]PeerStatus {
 

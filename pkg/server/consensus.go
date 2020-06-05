@@ -16,7 +16,6 @@ import (
 
 	pb "../../api"
 	"../../pkg/color"
-	hs "../hash"
 	"github.com/golang/glog"
 )
 
@@ -31,9 +30,11 @@ const (
 )
 
 // factor used if we want slow down election,  default is 1
-const FACTOR = 30
-const RefreshTime = 10 * FACTOR
-const HeartbeatInterval = 50 * FACTOR
+const FACTOR = 10
+const REFESH_TIME = 10 * FACTOR
+const HEARBEAT_INTERVAL = 50 * FACTOR
+
+const ElectionLog bool = false
 
 const (
 	RequestVoteReq ProtocolMessage = iota
@@ -67,9 +68,8 @@ type RaftProtocol struct {
 
 	// Volatile Raft state on all servers
 	state ProtocolState
-
+	// last election reset
 	electionResetEvent time.Time
-
 	// for each server, index of next log entry
 	nextIndex map[uint64]uint64
 	// for each server, index of highest log entry
@@ -95,20 +95,75 @@ type RaftProtocol struct {
 	// number of peers
 	numberPeers int
 
+	// commit and append index
 	volatileState RaftVolatileState
 }
 
-// Request Vote handler.
+/**
+Returns copy fof match and index maps.
+it mainly for debug to compare state between
+different servers.
+*/
+func (raft *RaftProtocol) GetLogIndexCopy() (map[uint64]uint64, map[uint64]uint64) {
+	raft.mu.Lock()
+	defer raft.mu.Unlock()
+
+	var copyNextIndex = make(map[uint64]uint64)
+	var copyMatchIndex = make(map[uint64]uint64)
+
+	for v, k := range raft.nextIndex {
+		copyNextIndex[k] = v
+	}
+
+	for v, k := range raft.matchIndex {
+		copyMatchIndex[k] = v
+	}
+
+	return copyNextIndex, copyMatchIndex
+}
+
+/*
+	Return copy of entire log.
+*/
+func (raft *RaftProtocol) GetLogCopy() []pb.LogEntry {
+
+	raft.mu.Lock()
+	defer raft.mu.Unlock()
+	var stateCopy []pb.LogEntry
+	for _, e := range raft.stateLog {
+		stateCopy = append(stateCopy, *e)
+	}
+	return stateCopy
+}
+
+/*
+	Return copy of volatile state.
+*/
+func (raft *RaftProtocol) GetVolatileState() RaftVolatileState {
+	raft.mu.Lock()
+	defer raft.mu.Unlock()
+	volatileState := RaftVolatileState{
+		commitIndex: raft.volatileState.CommitIndex(),
+		lastApplied: raft.volatileState.LastApplied(),
+	}
+
+	return volatileState
+}
+
+/**
+Request vote handler, listen for request vote msg.
+*/
 func (raft *RaftProtocol) RequestVote(vote *pb.RequestVote) (RequestVoteReply, error) {
 
 	var reply RequestVoteReply
-
 	if raft == nil {
 		reply.VoteGranted = true
 		return reply, nil
 	}
 
-	//	myLastTerm := raft.currentTerm
+	if raft.isDead() {
+		return reply, fmt.Errorf("servever state is shutdown")
+	}
 
 	raft.mu.Lock()
 	myLastTerm := raft.currentTerm
@@ -116,8 +171,7 @@ func (raft *RaftProtocol) RequestVote(vote *pb.RequestVote) (RequestVoteReply, e
 	raft.mu.Unlock()
 
 	// if term outdated make myself follower
-
-	if vote.Term > myLastTerm {
+	if vote.Term > myLastTerm || (vote.Term != math.MaxUint64 && myLastTerm == math.MaxUint64) {
 		raft.log("... term out of date")
 		raft.makeFollower(vote.Term)
 	}
@@ -152,23 +206,6 @@ func (raft *RaftProtocol) RequestVote(vote *pb.RequestVote) (RequestVoteReply, e
 	return reply, nil
 }
 
-// return true if cm in a dead state.
-func (raft *RaftProtocol) isDead() bool {
-	raft.mu.Lock()
-	defer raft.mu.Unlock()
-	if raft.state == Dead {
-		return true
-	}
-	return false
-}
-
-func uint64Min(a, b uint64) uint64 {
-	if a < b {
-		return a
-	}
-	return b
-}
-
 // Append entries handler return true if cm in a dead state.
 func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntriesReply, error) {
 
@@ -181,16 +218,16 @@ func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntrie
 		return &reply, fmt.Errorf("cm state is dead")
 	}
 
-	if req.Term > raft.currentTerm {
-		//raft.log("my term is out of dated, my term %v, leader term %v", oldTerm, req.Term)
+	// If RPC request or response contains term T > currentTerm:
+	// set currentTerm = T, convert to follower
+	oldTerm, oldState, _ := raft.getState()
+	if req.Term > oldTerm || (req.Term != math.MaxUint64 && oldTerm == math.MaxUint64) {
+		raft.log("my term is out of dated, my term %v, leader term %v", oldTerm, req.Term)
 		raft.makeFollower(req.Term)
 	}
 
-	oldTerm, oldState, _ := raft.getState()
-	// If RPC request or response contains term T > currentTerm:
-	// set currentTerm = T, convert to follower
-
 	// we read it again
+	oldTerm, oldState, _ = raft.getState()
 	reply.Success = false
 	if req.Term == oldTerm {
 		raft.log("... term is up to date.")
@@ -204,8 +241,7 @@ func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntrie
 		raft.electionResetEvent = time.Now()
 
 		if req.PrevLogIndex == math.MaxUint64 ||
-			(req.PrevLogIndex < uint64(len(raft.stateLog)) &&
-				req.PrevLogTerm == raft.stateLog[req.PrevLogIndex].Term) {
+			(req.PrevLogIndex < uint64(len(raft.stateLog)) && req.PrevLogTerm == raft.stateLog[req.PrevLogIndex].Term) {
 
 			reply.Success = true
 
@@ -223,7 +259,6 @@ func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntrie
 				upperBound++
 			}
 
-			// lower and upper bound
 			if upperBound < len(req.Entries) {
 				raft.log("... inserting entries %v from index %d", req.Entries[upperBound:], lowerBound)
 				raft.stateLog = append(raft.stateLog[:lowerBound], req.Entries[upperBound:]...)
@@ -231,21 +266,57 @@ func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntrie
 			}
 
 			// Send data commit index to a buffer
-			if req.LeaderCommit > raft.volatileState.CommitIndex() {
-				raft.volatileState.setCommitIndex(uint64Min(req.LeaderCommit, uint64(len(raft.stateLog)-1)))
+			if req.LeaderCommit > raft.volatileState.CommitIndex() ||
+				(req.LeaderCommit != math.MaxUint64 && raft.volatileState.CommitIndex() == math.MaxUint64) {
+				raft.volatileState.setCommitIndex(intMin(req.LeaderCommit, uint64(len(raft.stateLog)-1)))
 				raft.log("... setting commitIndex=%d", raft.volatileState.CommitIndex())
 				raft.commitReadyChan <- CommitReady{
 					Term: oldTerm,
 				}
 			}
+		} else {
+
+			//if req.PrevLogIndex >= len(raft.stateLog) {
+			//	reply.ConflictIndex = len(raft.stateLog)
+			//	reply.ConflictTerm = -1
+			//} else {
+			//	// PrevLogIndex points within our log, but PrevLogTerm doesn't match
+			//	// cm.log[PrevLogIndex].
+			//	reply.ConflictTerm = cm.log[args.PrevLogIndex].Term
+			//
+			//	var i int
+			//	for i = args.PrevLogIndex - 1; i >= 0; i-- {
+			//		if cm.log[i].Term != reply.ConflictTerm {
+			//			break
+			//		}
+			//	}
+			//	reply.ConflictIndex = i + 1
+			//}
 		}
 	}
 
 	// update term
 	reply.Term = oldTerm
-	raft.log("------> vote replay term=%d status=%v", reply.Term, reply.Success)
+	raft.log("------> append replay term=%d status=%v", reply.Term, reply.Success)
 
 	return &reply, nil
+}
+
+// return true if cm in a dead state.
+func (raft *RaftProtocol) isDead() bool {
+	raft.mu.Lock()
+	defer raft.mu.Unlock()
+	if raft.state == Dead {
+		return true
+	}
+	return false
+}
+
+func intMin(a, b uint64) uint64 {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 type RequestVoteReply struct {
@@ -301,6 +372,9 @@ func NewRaftProtocol(id uint64,
 	raft.commitReadyChan = make(chan CommitReady, 32)
 	raft.commitChan = commitChan
 
+	raft.volatileState.commitIndex = math.MaxUint64
+	raft.volatileState.lastApplied = math.MaxUint64
+
 	raft.Jitter = true
 	raft.Drop = false
 	raft.Force = false
@@ -331,14 +405,14 @@ func (raft *RaftProtocol) log(format string, args ...interface{}) {
 func (raft *RaftProtocol) electionTimeout() time.Duration {
 	if raft.Drop == false {
 		if raft.Jitter == true {
-			return time.Millisecond * time.Duration((HeartbeatInterval*3)+rand.Intn(HeartbeatInterval*3))
+			return time.Millisecond * time.Duration((HEARBEAT_INTERVAL*3)+rand.Intn(HEARBEAT_INTERVAL*3))
 		} else {
-			return time.Millisecond * time.Duration(HeartbeatInterval*3)
+			return time.Millisecond * time.Duration(HEARBEAT_INTERVAL*3)
 		}
 	} else {
 		// sleep and than respond
 		time.Sleep(60 * time.Second)
-		return time.Millisecond * time.Duration(HeartbeatInterval*3)
+		return time.Millisecond * time.Duration(HEARBEAT_INTERVAL*3)
 	}
 }
 
@@ -405,25 +479,28 @@ func (raft *RaftProtocol) runElectionTimer() {
 	// - the election timer expires and this CM becomes a candidate
 	// In a follower, this typically keeps running in the background for the
 	// duration of the CM's lifetime.
-	ticker := time.NewTicker(RefreshTime * time.Millisecond)
+	ticker := time.NewTicker(REFESH_TIME * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		<-ticker.C
 
 		raft.mu.Lock()
 		currentState := raft.state
-		raft.log("time to elect, kicked in (%v), term=%d myrole=%v", timeoutDuration, termStarted, currentState)
-		raft.mu.Unlock()
+		if ElectionLog {
+			raft.log("time to elect, kicked in (%v), term=%d my role=%v", timeoutDuration, termStarted, currentState)
+		}
 
 		// if we wake up and state changed, with raw from election
-		if oldState != raft.state {
+		if oldState != currentState {
 			raft.log("withdrawing %v current state.", currentState)
+			raft.mu.Unlock()
 			return
 		}
+		raft.mu.Unlock()
 
 		// wake up, check state.
 		if !raft.isExpired(termStarted) {
-			raft.log("withdrawing %v current state.", currentState)
+			raft.log("withdrawing term expired.")
 			break
 		}
 
@@ -531,7 +608,7 @@ func (raft *RaftProtocol) startElection() {
 					return
 				}
 
-				if voteReplay.Term > electionTerm {
+				if voteReplay.Term > electionTerm || electionTerm == math.MaxUint64 {
 					raft.log("my term is out of dated.")
 					raft.makeFollower(voteReplay.Term)
 					return
@@ -549,7 +626,9 @@ func (raft *RaftProtocol) startElection() {
 					raft.log("wins election with %d votes", votesReceived)
 					raft.mu.Unlock()
 					raft.startLeader()
+					return
 				}
+				raft.mu.Unlock()
 			}
 		}(peerId)
 	}
@@ -608,7 +687,7 @@ func (raft *RaftProtocol) startLeader() {
 	raft.makeLeader()
 
 	go func() {
-		ticker := time.NewTicker(HeartbeatInterval * time.Millisecond)
+		ticker := time.NewTicker(HEARBEAT_INTERVAL * time.Millisecond)
 		defer ticker.Stop()
 
 		// Send periodic heartbeats, as long as still leader.
@@ -649,7 +728,7 @@ func (raft *RaftProtocol) readCurrentTerm() uint64 {
 /*
 	Broadcast msg issue AppendEntriesReply to remote peer.
 */
-func (raft *RaftProtocol) broadcastMsg(peer uint64, term uint64) error {
+func (raft *RaftProtocol) broadcastMsg(peer uint64, myTerm uint64) error {
 
 	raft.mu.Lock()
 	nextIndex := raft.nextIndex[peer]
@@ -662,47 +741,47 @@ func (raft *RaftProtocol) broadcastMsg(peer uint64, term uint64) error {
 
 	myState := raft.state
 	entries := raft.stateLog[nextIndex:]
+	raft.mu.Unlock()
 
 	appendEntry := &pb.AppendEntries{
-		Term:         term,
+		Term:         myTerm,
 		LeaderId:     raft.id,
 		PrevLogIndex: prevLogIndex,
 		PrevLogTerm:  prevLogTerm,
 		Entries:      entries,
 		LeaderCommit: raft.volatileState.CommitIndex(),
 	}
-	raft.mu.Unlock()
 
 	// send gRPC call and we DON'T hold a lock.
-	raft.log("%v sending append entries -> peer %v: ni=%d, args=%+v", color.Red+myState.String()+color.Reset, peer, nextIndex, hs.AsSha256(hs.GenericHash(appendEntry)))
+	raft.log("%v sending append entries -> peer %v: ni=%d, args=%+v", color.Red+myState.String()+color.Reset, peer, 0, appendEntry)
 	rpcReply, err := raft.server.RemoteCall(peer, appendEntry)
 	if err != nil {
-		raft.log("invalid respond to an rpc call peer %v: nextIndex=%d, args=%+v err=[%+v]", peer, 0, appendEntry.LeaderCommit, err)
+		glog.Errorf("invalid respond to an rpc call peer "+
+			"%v: nextIndex=%d, log index=%+v,  prev log term = [%v], err=[%+v]", peer, 0, appendEntry.PrevLogIndex, appendEntry.PrevLogTerm, err)
 		return nil
 	}
 
 	// check rpc in case we got bogus msg
 	replay, ok := rpcReply.(*pb.AppendEntriesReply)
 	if !ok {
-		raft.log("invalid respond type rpc call peer %v: nextIndex=%d, args=%+v", peer, 0, appendEntry)
+		glog.Errorf("invalid respond type rpc call peer %v: nextIndex=%d, args=%+v", peer, 0, appendEntry)
 		return fmt.Errorf("invalid respond to rpc call")
 	}
 
-	// check term if someone already progress, become follower based on term we saw
-	if term < replay.Term {
+	// check myTerm if someone already progress, become follower based on myTerm we saw
+	if myTerm < replay.Term || myTerm == math.MaxUint64 {
 		raft.makeFollower(replay.Term)
 		return nil
 	}
 
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
-	// i'storage leader and term are matched
-	if raft.state == Leader && term == replay.Term {
+	// leader and myTerm are matched
+	if raft.state == Leader && myTerm == replay.Term {
 		if replay.Success {
 			raft.nextIndex[peer] = nextIndex + uint64(len(entries))
 			raft.matchIndex[peer] = raft.nextIndex[peer] - 1
-			raft.log("Append entries rpcReply from [%d] success: nextIndex := [%v], matchIndex := [%v]",
-				peer, raft.nextIndex, raft.matchIndex)
+			raft.log("Append entries rpcReply from [%d] success: nextIndex := [%v], matchIndex := [%v]", peer, raft.nextIndex, raft.matchIndex)
 			savedCommitIndex := raft.volatileState.CommitIndex()
 
 			for i := raft.volatileState.CommitIndex() + 1; i < uint64(len(raft.stateLog)); i++ {
@@ -717,10 +796,9 @@ func (raft *RaftProtocol) broadcastMsg(peer uint64, term uint64) error {
 			}
 
 			if raft.volatileState.CommitIndex() != savedCommitIndex {
-				raft.log("%v sets commitIndex := %d",
-					color.Red+myState.String()+color.Reset, raft.volatileState.CommitIndex())
+				raft.log("%v sets commitIndex := %d", color.Red+myState.String()+color.Reset, raft.volatileState.CommitIndex())
 				raft.commitReadyChan <- CommitReady{
-					Term: term,
+					Term: myTerm,
 				}
 			}
 		} else {
@@ -766,10 +844,6 @@ func (raft *RaftProtocol) Status() (id uint64, term uint64, isLeader bool) {
 Dumps entire log, it mainly for debug purpose.
 */
 func (raft *RaftProtocol) getLog() []*pb.LogEntry {
-	if raft == nil {
-		return nil
-	}
-
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
 	return raft.stateLog
@@ -779,13 +853,10 @@ func (raft *RaftProtocol) getLog() []*pb.LogEntry {
   Submit a log entry as key value pair to log
 */
 func (raft *RaftProtocol) Submit(kv *pb.KeyValuePair) bool {
-	if raft == nil {
-		return false
-	}
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
 
-	raft.log("Submit received by %v: %v", raft.state, kv.Key, kv.Value)
+	raft.log("Submit received by %v: [%s]", raft.state, kv.Key)
 	if raft.state == Leader {
 		raft.stateLog = append(raft.stateLog, &pb.LogEntry{
 			Command: kv,

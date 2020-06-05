@@ -145,7 +145,7 @@ func (vs *VolatileStorage) HasData() bool {
 
 /**
   Slow method , it mainly good for debug in case
-  we wat compare entire map
+  we need dump entire map
 */
 func (vs *VolatileStorage) GetCopy() map[string][]byte {
 	vs.mutex.Lock()
@@ -159,5 +159,3 @@ func (vs *VolatileStorage) GetCopy() map[string][]byte {
 
 	return vsCopy
 }
-
-// Encoding the m

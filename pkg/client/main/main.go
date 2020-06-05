@@ -43,6 +43,7 @@ func main() {
 		ok, err := apiClient.Store(key, val)
 		if err == nil {
 			if ok == true {
+				time.Sleep(1 * time.Second)
 				resp, httpErr := apiClient.Get(key)
 				if httpErr != nil {
 					log.Infof("Got respond back %v", resp)
@@ -51,7 +52,6 @@ func main() {
 		} else {
 			log.Infof("Failed", err)
 		}
-
 		time.Sleep(5 * time.Second)
 	}
 

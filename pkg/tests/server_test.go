@@ -1,42 +1,42 @@
 /***
+	Unit test for server side state transition validation.
 
-	on going work.
-   Mustafa Bayramov
+	Each test start N number of server on local host,  it need
+	valid config artifact.
+
+    Mustafa Bayramov
 */
 package tests
 
 import (
 	"flag"
+	"fmt"
 	"log"
-	"net"
-	"net/http"
+	"sync"
 	"testing"
 	"time"
 
+	"../client"
 	"../server"
 )
 
-// return if a tcp/udp port is free to use
-func checkSocket(hostPort string) bool {
+var seqMutex sync.Mutex
 
-	l, err := net.Listen("tcp", hostPort)
-	if l != nil {
-		defer l.Close()
+func seq() func() {
+	seqMutex.Lock()
+	return func() {
+		seqMutex.Unlock()
 	}
-	if err != nil {
-		return false
-	}
-	return true
 }
 
-// generate server id
-func generateId(address string, port string) string {
-	return address + ":" + port
-}
+// default location
+const DefaultConfig string = "/Users/spyroot/go/src/github.com/spyroot/rocinante/config.yaml"
+
+// enable verbose log output.  might be very chatty
+const TestVerbose bool = false
 
 //	mainly to make glog happy
-func usage() {
-}
+func usage() {}
 
 /**
 mainly to make glog happy
@@ -44,21 +44,16 @@ mainly to make glog happy
 func init() {
 	log.Printf("test")
 	flag.Usage = usage
-	flag.Set("test.v", "true")
-
+	_ = flag.Set("test.v", "true")
 }
 
 /**
-Simple leader election.
+Simple leader election test.
 */
 func TestLeaderElection(t *testing.T) {
 
-	type args struct {
-		serverSpec server.ServerSpec
-		peers      []server.ServerSpec
-		port       string
-		ready      <-chan interface{}
-	}
+	defer seq()()
+
 	tests := []struct {
 		name    string
 		timeout time.Duration // second, ms etc
@@ -73,44 +68,52 @@ func TestLeaderElection(t *testing.T) {
 		},
 	}
 
-	// log.SetOutput(ioutil.Discard)
 	// channel waiting signal to shutdown
 	quit := make(chan interface{})
-	teardownTestCase, servers, err := server.SetupTestCase(t, "/Users/spyroot/go/src/github.com/spyroot/rocinante/config.yaml", quit)
+	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, TestVerbose)
 	if err != nil {
 		t.Fatal("NewServer() error during setup", err)
 	}
 
-	t.Log("Number of servers", len(servers))
+	if len(servers) == 0 {
+		t.Errorf("zero server runing")
+	}
+
+	if TestVerbose {
+		t.Log("Number of servers", len(servers))
+	}
 
 	// execute tests
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			var converged bool = false
-			var current_leader uint64 = 0
+			var converged = false
+			var currentLeader uint64 = 0
 			// repeat tt.repeat times
 			for i := 0; i < tt.repeat && converged == false; i++ {
 				// go sleep , wake up and check all 3 servers
 				ticker := time.NewTicker(tt.timeout)
-				defer ticker.Stop()
 				<-ticker.C
-
 				for _, s := range servers {
-					leader_id, _, isLeader := s.RaftState().Status()
-					t.Log("node stats", leader_id, isLeader)
+					leaderId, _, isLeader := s.RaftState().Status()
+					if TestVerbose {
+						t.Log("node stats", leaderId, isLeader)
+					}
 					if isLeader == true {
-						t.Log("leader elected", s.LeaderId)
-						current_leader = leader_id
+						if TestVerbose {
+							t.Log("leader elected", s.LeaderId)
+						}
+						currentLeader = leaderId
 						converged = true
 						break
 					}
 				}
+				ticker.Stop()
 			}
 
 			// otherwise passed
-			if current_leader == 0 {
-				t.Errorf("leader id (type %v), expected none zero id", current_leader)
+			if currentLeader == 0 {
+				t.Errorf("leader id (type %v), expected none zero id", currentLeader)
 			}
 
 			// we check that only one server is leader
@@ -144,27 +147,30 @@ func TestLeaderElection(t *testing.T) {
 	// wait all test to finish
 	<-quit
 
-	t.Log("Shutdown all servers.")
+	if TestVerbose {
+		t.Log("Shutdown all servers.")
+	}
+
 	// shutdown all
 	for _, s := range servers {
 		s.Shutdown()
 	}
+
+	// we need wait a bit so all port released back to tcp stack
+	time.Sleep(1 * time.Second)
 }
 
 /**
-    Test start 3 server,  fail one and check re-election.
-
-	Note if run all test at same time,  TCP stack need release all ports.
-
+    Test start 3 server.
+	- wait to election to converge
+	- fail one and check re-election. We expect one of the node switch.
+	- Note if run all test at same time,
+      TCP stack need release all ports.
 */
 func TestLeaderElection2(t *testing.T) {
 
-	type args struct {
-		serverSpec server.ServerSpec
-		peers      []server.ServerSpec
-		port       string
-		ready      <-chan interface{}
-	}
+	defer seq()()
+
 	tests := []struct {
 		name    string
 		timeout time.Duration // second, ms etc
@@ -179,41 +185,40 @@ func TestLeaderElection2(t *testing.T) {
 		},
 	}
 
-	// log.SetOutput(ioutil.Discard)
 	// channel waiting signal to shutdown
 	quit := make(chan interface{})
-	teardownTestCase, servers, err := server.SetupTestCase(t, "/Users/spyroot/go/src/github.com/spyroot/rocinante/config.yaml", quit)
+	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, TestVerbose)
 	if err != nil {
 		t.Fatal("NewServer() error during setup", err)
 	}
 
 	time.Sleep(2 * time.Second)
-
-	t.Log("Number of servers", len(servers))
+	if TestVerbose {
+		t.Log("Number of servers", len(servers))
+	}
 
 	// execute tests
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			var converged bool = false
+			var converged = false
 			var currentLeader uint64 = 0
-			// repeat tt.repeat times
+			// wait for all server to converge
 			for i := 0; i < tt.repeat && converged == false; i++ {
 				// go sleep , wake up and check all 3 servers
 				ticker := time.NewTicker(tt.timeout)
-				defer ticker.Stop()
 				<-ticker.C
-
 				for _, s := range servers {
-					leader_id, _, isLeader := s.RaftState().Status()
-					t.Log("node stats", leader_id, isLeader)
+					leaderId, _, isLeader := s.RaftState().Status()
+					t.Log("node stats", leaderId, isLeader)
 					if isLeader == true {
-						t.Log("leader elected", leader_id)
-						currentLeader = leader_id
+						t.Log("leader elected", leaderId)
+						currentLeader = leaderId
 						converged = true
 						break
 					}
 				}
+				ticker.Stop()
 			}
 
 			// otherwise passed
@@ -229,7 +234,7 @@ func TestLeaderElection2(t *testing.T) {
 				if isLeader == true {
 					numLeaders++
 				}
-
+				// check we converge on the term
 				if convergedTerm == 0 {
 					convergedTerm = term
 				} else {
@@ -243,7 +248,7 @@ func TestLeaderElection2(t *testing.T) {
 				t.Errorf("expected single leader in the cluster")
 			}
 
-			// re-election
+			// re-election, shutdown a node
 			for _, s := range servers {
 				_, _, isLeader := s.RaftState().Status()
 				// shutdown.
@@ -252,17 +257,13 @@ func TestLeaderElection2(t *testing.T) {
 				}
 			}
 
-			// repeat,  we should have two server and leader re-elected
-			//converged bool = false
-			//current_leader uint64 = 0
-			// repeat tt.repeat times
+			// repeat, we should have two server and leader re-elected
 			oldLeader := currentLeader
 			currentLeader = 0
 			converged = false
 			for i := 0; i < tt.repeat && converged == false; i++ {
 				// go sleep , wake up and check all 3 servers
 				ticker := time.NewTicker(tt.timeout)
-				defer ticker.Stop()
 				<-ticker.C
 				for _, s := range servers {
 					leaderId, _, isLeader := s.RaftState().Status()
@@ -273,6 +274,7 @@ func TestLeaderElection2(t *testing.T) {
 						break
 					}
 				}
+				ticker.Stop()
 			}
 
 			// otherwise passed
@@ -297,17 +299,18 @@ func TestLeaderElection2(t *testing.T) {
 }
 
 /**
-    Test start 3 server,  fail one and check re-election , re-add back
-	Note if run all test at same time,  TCP stack need release all ports.
-*/
-func TestLeaderElection3(t *testing.T) {
 
-	type args struct {
-		serverSpec server.ServerSpec
-		peers      []server.ServerSpec
-		port       string
-		ready      <-chan interface{}
-	}
+    Test start 3 server,
+	- Fail one and check re-election,
+	- Re-add server back
+	- Check that cluster in normal state.
+
+ 	Note if run all test at same time,  TCP stack need release all ports.
+*/
+func TestLeaderStartStop(t *testing.T) {
+
+	defer seq()()
+
 	tests := []struct {
 		name    string
 		timeout time.Duration // second, ms etc
@@ -323,44 +326,44 @@ func TestLeaderElection3(t *testing.T) {
 	}
 
 	time.Sleep(2 * time.Second)
-	// log.SetOutput(ioutil.Discard)
-	// channel waiting signal to shutdown
 	quit := make(chan interface{})
-	teardownTestCase, servers, err := server.SetupTestCase(t, "/Users/spyroot/go/src/github.com/spyroot/rocinante/config.yaml", quit)
+	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, TestVerbose)
 	if err != nil {
-		t.Fatal("NewServer() error during setup", err)
+		t.Errorf("NewServer() error during setup %v", err)
 	}
 
-	t.Log("Number of servers", len(servers))
+	if len(servers) == 0 {
+		t.Errorf("zero server runing")
+	}
 
 	// execute tests
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			var converged bool = false
-			var current_leader uint64 = 0
+			var converged = false
+			var currentLeader uint64 = 0
 			// repeat tt.repeat times
 			for i := 0; i < tt.repeat && converged == false; i++ {
 				// go sleep , wake up and check all 3 servers
 				ticker := time.NewTicker(tt.timeout)
-				defer ticker.Stop()
 				<-ticker.C
-
 				for _, s := range servers {
-					leader_id, _, isLeader := s.RaftState().Status()
-					t.Log("node stats", leader_id, isLeader)
+					leaderId, _, isLeader := s.RaftState().Status()
+					t.Log("node stats", leaderId, isLeader)
 					if isLeader == true {
-						t.Log("leader elected", leader_id)
-						current_leader = leader_id
+						t.Log("leader elected", leaderId)
+						currentLeader = leaderId
 						converged = true
 						break
 					}
 				}
+
+				ticker.Stop()
 			}
 
 			// otherwise passed
-			if current_leader == 0 {
-				t.Errorf("leader id (type %v), expected none zero id", current_leader)
+			if currentLeader == 0 {
+				t.Errorf("leader id (type %v), expected none zero id", currentLeader)
 			}
 
 			// we check that only one server is leader
@@ -394,32 +397,30 @@ func TestLeaderElection3(t *testing.T) {
 				}
 			}
 
-			// repeat,  we should have two server and leader re-elected
-			// converged bool = false
-			// current_leader uint64 = 0
-			// repeat tt.repeat times
-			oldLeader := current_leader
-			current_leader = 0
+			// repeat, we should have two server and leader re-elected
+			oldLeader := currentLeader
+			currentLeader = 0
 			converged = false
 			for i := 0; i < tt.repeat && converged == false; i++ {
 				// go sleep , wake up and check all 3 servers
 				ticker := time.NewTicker(tt.timeout)
-				defer ticker.Stop()
 				<-ticker.C
 				for _, s := range servers {
 					leaderId, _, isLeader := s.RaftState().Status()
 					if isLeader == true {
 						t.Log("new leader elected", s.LeaderId, oldLeader)
-						current_leader = leaderId
+						currentLeader = leaderId
 						converged = true
 						break
 					}
 				}
+
+				ticker.Stop()
 			}
 
 			// otherwise passed
-			if current_leader == 0 {
-				t.Errorf("leader id (type %v), expected none zero id", current_leader)
+			if currentLeader == 0 {
+				t.Errorf("leader id (type %v), expected none zero id", currentLeader)
 			}
 
 			/** waiting and re add server back to a cluster */
@@ -435,8 +436,8 @@ func TestLeaderElection3(t *testing.T) {
 			time.Sleep(2 * time.Second)
 
 			/* check that leader didn't change */
-			oldLeader = current_leader
-			current_leader = 0
+			oldLeader = currentLeader
+			currentLeader = 0
 			converged = false
 			for i := 0; i < tt.repeat && converged == false; i++ {
 				// go sleep , wake up and check all 3 servers
@@ -447,7 +448,7 @@ func TestLeaderElection3(t *testing.T) {
 					leaderId, _, isLeader := s.RaftState().Status()
 					if isLeader == true {
 						t.Log("new leader elected", s.LeaderId, oldLeader)
-						current_leader = leaderId
+						currentLeader = leaderId
 						converged = true
 						break
 					}
@@ -455,8 +456,8 @@ func TestLeaderElection3(t *testing.T) {
 			}
 
 			// otherwise passed
-			if current_leader == 0 {
-				t.Errorf("leader id (type %v), expected none zero id", current_leader)
+			if currentLeader == 0 {
+				t.Errorf("leader id (type %v), expected none zero id", currentLeader)
 			}
 
 			// end
@@ -476,27 +477,32 @@ func TestLeaderElection3(t *testing.T) {
 	t.Log("Done.")
 }
 
-func checLeader(t *testing.T, repeat int, timeout time.Duration, servers []*server.Server) (bool, uint64) {
+/**
+
+ */
+func checkLeader(t *testing.T, repeat int, timeout time.Duration, servers []*server.Server, verbose bool) (bool, uint64) {
 
 	var converged bool = false
 	var current_leader uint64 = 0
 	// repeat tt.repeat times
 	for i := 0; i < repeat && converged == false; i++ {
-		// go sleep , wake up and check all 3 servers
 		ticker := time.NewTicker(timeout)
-		defer ticker.Stop()
 		<-ticker.C
-
 		for _, s := range servers {
 			leaderId, _, isLeader := s.RaftState().Status()
-			t.Log("node stats", leaderId, isLeader)
+			if verbose {
+				t.Log("node stats", leaderId, isLeader)
+			}
 			if isLeader == true {
-				t.Log("leader elected", leaderId)
+				if verbose {
+					t.Log("leader elected", leaderId)
+				}
 				current_leader = leaderId
 				converged = true
 				break
 			}
 		}
+		ticker.Stop()
 	}
 
 	// otherwise passed
@@ -529,55 +535,14 @@ func checLeader(t *testing.T, repeat int, timeout time.Duration, servers []*serv
 	return true, current_leader
 }
 
-// return leader
-func getLeader(t *testing.T, repeat int, timeout time.Duration, servers []*server.Server) *server.Server {
-
-	var converged bool = false
-	var current_leader uint64 = 0
-
-	for i := 0; i < repeat && converged == false; i++ {
-		ticker := time.NewTicker(timeout)
-		defer ticker.Stop()
-		<-ticker.C
-
-		for _, s := range servers {
-			leaderId, _, isLeader := s.RaftState().Status()
-			if isLeader == true {
-				current_leader = leaderId
-				converged = true
-				break
-			}
-		}
-	}
-
-	// otherwise passed
-	if current_leader == 0 {
-		t.Errorf("leader id (type %v), expected none zero id", current_leader)
-	}
-
-	// we check that only one server is leader
-	for _, s := range servers {
-		_, _, isLeader := s.RaftState().Status()
-		if isLeader == true {
-			return s
-		}
-	}
-
-	return nil
-}
-
 /**
     Test start 3 server,  fail one and check re-election , re-add back
 	Note if run all test at same time,  TCP stack need release all ports.
 */
 func TestSubmit(t *testing.T) {
 
-	type args struct {
-		serverSpec server.ServerSpec
-		peers      []server.ServerSpec
-		port       string
-		ready      <-chan interface{}
-	}
+	defer seq()()
+
 	tests := []struct {
 		name    string
 		timeout time.Duration // second, ms etc
@@ -593,34 +558,49 @@ func TestSubmit(t *testing.T) {
 	}
 
 	time.Sleep(2 * time.Second)
-	// log.SetOutput(ioutil.Discard)
-	// channel waiting signal to shutdown
 	quit := make(chan interface{})
-	teardownTestCase, servers, err := server.SetupTestCase(t, "/Users/spyroot/go/src/github.com/spyroot/rocinante/config.yaml", quit)
+	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, false)
 	if err != nil {
 		t.Fatal("NewServer() error during setup", err)
 	}
-
-	t.Log("Number of servers", len(servers))
+	if TestVerbose {
+		t.Log("Number of servers", len(servers))
+	}
 
 	// execute tests
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 
-			b, _ := checLeader(t, tt.repeat, tt.timeout, servers)
+			b, _ := checkLeader(t, tt.repeat, tt.timeout, servers, false)
 			if !b {
 				t.Error("failed select a leader.")
 			}
 
-			leader := getLeader(t, tt.repeat, tt.timeout, servers)
+			leader := getLeader(t, tt.repeat, tt.timeout, servers, false)
 			apiEndpoint := leader.RESTEndpoint()
-			simpleRequest := "http://" + apiEndpoint.RestNetworkBind + "/submit/1"
-			req, err := http.NewRequest("GET", simpleRequest, nil)
+
+			apiClient, err := client.NewRestClientFromUrl(apiEndpoint.RestNetworkBind)
 			if err != nil {
-				t.Fatal(err)
+				t.Error("failed build api client ", err)
+				return
 			}
 
-			t.Log(req)
+			ok, err := storeAndCheck(t, apiClient, "test", "test123", 2000)
+			if err != nil {
+				t.Error("failed test ", err)
+			}
+			if ok == false {
+				t.Error("failed fetch value ")
+			}
+
+			_ = CheckStorageConsistency(t, servers, false)
+
+			////we check that all server serialized.
+			//err = checkConsistency(t, servers, false)
+			//if err != nil {
+			//	t.Error("consistency failed", err)
+			//}
+
 			// end
 		})
 
@@ -630,10 +610,144 @@ func TestSubmit(t *testing.T) {
 	// wait all test to finish
 	<-quit
 
-	t.Log("Shutdown all servers.")
+	if TestVerbose {
+		t.Log("Shutdown all servers.")
+	}
+
 	// shutdown all
-	//for _, s := range servers {
-	//	s.Shutdown()
-	//}
+	for _, s := range servers {
+		s.Shutdown()
+	}
 	t.Log("Done.")
+}
+
+/**
+Return leader after cluster converged
+*/
+func getLeader(t *testing.T, repeat int, timeout time.Duration, servers []*server.Server, verbose bool) *server.Server {
+
+	var converged bool = false
+	var currentLeader uint64 = 0
+
+	for i := 0; i < repeat && converged == false; i++ {
+		ticker := time.NewTicker(timeout)
+		<-ticker.C
+		for _, s := range servers {
+			leaderId, _, isLeader := s.RaftState().Status()
+			if isLeader == true {
+				currentLeader = leaderId
+				converged = true
+				break
+			}
+		}
+		ticker.Stop()
+	}
+
+	// otherwise passed
+	if currentLeader == 0 {
+		t.Errorf("leader id (type %v), expected none zero id", currentLeader)
+	}
+
+	// we check that only one server is leader
+	for _, s := range servers {
+		_, _, isLeader := s.RaftState().Status()
+		if isLeader == true {
+			return s
+		}
+	}
+
+	return nil
+}
+
+/**
+Store value in cluster , fetch it back after it committed and compare
+*/
+func storeAndCheck(t *testing.T, apiClient *client.RestClient, key string, val string, wait time.Duration) (bool, error) {
+
+	if apiClient == nil {
+		return false, fmt.Errorf("failed client is nil")
+	}
+
+	origVal := []byte(val)
+	ok, err := apiClient.Store(key, origVal)
+	if err != nil {
+		return false, err
+	}
+	if ok == false {
+		return false, fmt.Errorf("failed to store value")
+	}
+
+	time.Sleep(wait * time.Millisecond)
+	resp, httpErr := apiClient.Get(key)
+
+	if httpErr != nil {
+		return false, err
+	}
+	if resp.Success == false {
+		return false, fmt.Errorf("failed featch value stored")
+	}
+
+	fromServer := string(resp.Value)
+	if val == fromServer {
+		return true, nil
+	}
+
+	return true, fmt.Errorf("value missmatched")
+}
+
+/**
+	Check commit record in memory storage.
+    Note test need wait a bit after commit, in order message populated
+    in all cluster members
+*/
+func CheckStorageConsistency(t *testing.T, servers []*server.Server, verbose bool) error {
+
+	var inMemoryStorage = make([]map[string][]byte, len(servers))
+	var inMemorySize = make([]int, len(servers), len(servers))
+
+	// get all in memory db
+	for i, _ := range servers {
+		inMemoryStorage[i] = servers[i].GetInMemoryStorage()
+		inMemorySize[i] = len(inMemoryStorage[i])
+		if verbose {
+			t.Logf("in memory storage size %d", inMemorySize[i])
+		}
+	}
+
+	return nil
+}
+
+/**
+
+ */
+func CheckConsistency(t *testing.T, servers []*server.Server, verbose bool) error {
+
+	var copyNextIndex = make([]map[uint64]uint64, len(servers))
+	var copyMatchIndex = make([]map[uint64]uint64, len(servers))
+	var indexSize = make([]int, len(servers), len(servers))
+	var matchSize = make([]int, len(servers), len(servers))
+
+	// copy all index maps from all servers
+	for i, s := range servers {
+		copyNextIndex[i], copyMatchIndex[i] = s.RaftState().GetLogIndexCopy()
+		indexSize[i] = len(copyNextIndex[i])
+		matchSize[i] = len(copyMatchIndex[i])
+		t.Logf("index size %d match size %d", indexSize[i], matchSize[i])
+	}
+
+	iSize := indexSize[0]
+	mSize := matchSize[0]
+	if verbose {
+		t.Logf("index size %d match size %d", iSize, matchSize)
+	}
+	for i, _ := range servers {
+		if iSize != indexSize[i] {
+			return fmt.Errorf("index size missmatch peer [%v] %d %d", servers[i].ServerID(), iSize, indexSize[i])
+		}
+		if mSize != matchSize[i] {
+			return fmt.Errorf("match index missmatch peer [%v] %d %d", servers[i].ServerID(), mSize, matchSize[i])
+		}
+	}
+
+	return nil
 }

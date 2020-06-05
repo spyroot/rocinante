@@ -1,12 +1,14 @@
 package server
 
 import (
-	"../server/artifacts"
 	"fmt"
-	"github.com/golang/glog"
 	"net"
 	"sync"
 	"testing"
+
+	hs "../hash"
+	"../server/artifacts"
+	"github.com/golang/glog"
 )
 
 /*
@@ -32,14 +34,17 @@ artifact:
         wwwroot: /Users/spyroot/go/src/github.com/spyroot/rocinante/pkg/template/
   global:
 */
-func SetupTestCase(t *testing.T, config string, quit chan interface{}) (func(t *testing.T), []*Server, error) {
+func SetupTestCase(t *testing.T, config string, quit chan interface{}, verbose bool) (func(t *testing.T), []*Server, error) {
 
 	// lock used to protect servers return value ,
 	// while we initialize in go routine each server
 	var lck = &sync.Mutex{}
 	var servers []*Server
 
-	t.Log("setup test case")
+	if verbose {
+		t.Log("setup test case")
+	}
+
 	var configFile = config
 	artifact, err := artifacts.Read(configFile)
 	if err != nil {
@@ -54,31 +59,36 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}) (func(t *
 		return nil, nil, err
 	}
 
-	t.Log("setup server")
+	if verbose {
+		t.Log("setup server")
+	}
 
 	var wg sync.WaitGroup
+	var raftBinding string
+	var restBinding string
+	var myNetworkSpec ServerSpec
 
 	for i, controller := range controllers {
 		networkSpec := make([]ServerSpec, 0)
 
-		myID := GenerateId(controllers[i].Address, controller.Port)
-		myRest := GenerateId(controllers[i].Address, controller.Rest)
+		raftBinding = GenerateId(controllers[i].Address, controller.Port)
+		restBinding = GenerateId(controllers[i].Address, controller.Rest)
 
-		myNetworkSpec := ServerSpec{
-			hash(myID),
-			myRest,
-			"",
-			artifact.BaseDir,
-			"",
-			"",
+		myNetworkSpec = ServerSpec{
+			ServerID:        hs.Hash64(raftBinding),
+			RaftNetworkBind: raftBinding,
+			RestNetworkBind: restBinding,
+			GrpcNetworkBind: raftBinding,
+			Basedir:         artifact.BaseDir,
+			LogDir:          "",
 		}
 
 		// if both port area free add to peer list, all other peers
 		// final result should:
 		// myNetworkSpec hold server spec
 		// peerSpec hold all other peer spec
-		if CheckSocket(myID) && CheckSocket(myRest) {
-			glog.Infof("Found unused port, server id ", myID)
+		if CheckSocket(raftBinding) && CheckSocket(restBinding) {
+			glog.Infof("Found unused port, server id ", raftBinding)
 			myPort := controllers[i].Port
 			for p := 0; p < len(controllers); p++ {
 				if p != i {
@@ -97,7 +107,9 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}) (func(t *
 			go func(mySpec ServerSpec, peerSpec []ServerSpec, p string) {
 
 				// start serving
-				t.Log("Starting server", mySpec)
+				if verbose {
+					t.Log("Starting server", mySpec)
+				}
 				ready := make(chan interface{})
 				srv, err := NewServer(mySpec, peerSpec, p, ready)
 				if err != nil {
@@ -106,7 +118,10 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}) (func(t *
 
 				lck.Lock()
 				servers = append(servers, srv)
-				t.Log("Added server to a list", len(servers))
+				if verbose {
+					t.Log("Added server to a list", len(servers))
+				}
+
 				wg.Done()
 				lck.Unlock()
 
@@ -115,18 +130,27 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}) (func(t *
 				if err != nil {
 					glog.Error(err)
 				}
+
 			}(myNetworkSpec, networkSpec, myPort)
 		}
-		t.Log("server started.")
+		if verbose {
+			t.Log("server started.")
+		}
 	}
 
 	wg.Wait()
-	t.Log("all server started.")
+	if verbose {
+		t.Log("all server started.")
+	}
 
 	// return callback to close channel
 	return func(t *testing.T) {
-		t.Log("Shutdown.")
+		if verbose {
+			t.Log("Shutdown.")
+		}
 		close(quit)
-		t.Log("teardown test case")
+		if verbose {
+			t.Log("teardown test case")
+		}
 	}, servers, nil
 }

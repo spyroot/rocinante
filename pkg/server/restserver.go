@@ -22,7 +22,7 @@ const ApiSubmit string = "/submit"
 const ApiShutdown string = "/shutdown"
 const ApiLog string = "/log"
 const ApiCommitted string = "/committed"
-const ApiGet string = "/committed"
+const ApiGet string = "/get"
 const ApiPeerList = "/peer/list"
 const ApiIndex = "/"
 const DefaultLogSize int = 5
@@ -71,6 +71,12 @@ type LogRespond struct {
 	Value  string `json:"value"`
 	Term   uint64 `json:"term"`
 	Synced bool
+}
+
+type ValueRespond struct {
+	// leader id
+	Value   []byte `json:"value"`
+	Success bool   `json:"success"`
 }
 
 /*
@@ -359,19 +365,22 @@ func (rest *Restful) getValue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	respond := ValueRespond{
+		Value:   submitResp,
+		Success: ok,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	js, err := json.Marshal(submitResp)
+	jsRespond, err := json.Marshal(respond)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
-	respSize, err := w.Write(js)
+	respSize, err := w.Write(jsRespond)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-
 	if respSize == 0 {
 		http.Error(w, "empty http respond", http.StatusInternalServerError)
 		return
