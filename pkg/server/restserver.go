@@ -21,7 +21,11 @@ const ApiLeader string = "/leader"
 const ApiSubmit string = "/submit"
 const ApiShutdown string = "/shutdown"
 const ApiLog string = "/log"
+const ApiCommitted string = "/committed"
+const ApiGet string = "/committed"
 const ApiPeerList = "/peer/list"
+const ApiIndex = "/"
+const DefaultLogSize int = 5
 
 type Restful struct {
 	lock    sync.Mutex
@@ -61,7 +65,17 @@ type LeaderRespond struct {
 	RestBinding string `json:"RestBinding"`
 }
 
-//
+type LogRespond struct {
+	// leader id
+	Key    string `json:"key"`
+	Value  string `json:"value"`
+	Term   uint64 `json:"term"`
+	Synced bool
+}
+
+/*
+	Router handler for restful API
+*/
 func NewRestfulServer(s *Server, bind string, baseDir string) (*Restful, error) {
 
 	r := new(Restful)
@@ -70,10 +84,10 @@ func NewRestfulServer(s *Server, bind string, baseDir string) (*Restful, error) 
 
 	// register all end points
 	router := mux.NewRouter().StrictSlash(true)
-	router.HandleFunc("/", r.Index)
+	router.HandleFunc(ApiIndex, r.Index)
 	router.HandleFunc("/submit/{key}/{val}", r.submit)
-	router.HandleFunc("/get", r.getLog)
-	router.HandleFunc("/get/{key}", r.getLog)
+	router.HandleFunc(ApiCommitted, r.getCommitted)
+	router.HandleFunc(ApiGet+"/{key}", r.getValue)
 	router.HandleFunc(ApiLog, r.getLog)
 	router.HandleFunc(ApiShutdown, r.shutdown)
 	router.HandleFunc(ApiLeader, r.leader)
@@ -129,7 +143,7 @@ func (rest *Restful) Index(w http.ResponseWriter, r *http.Request) {
 	var prev = rest.server.serverSpec.RaftNetworkBind
 	var prevID = currentServer.ServerID
 
-	for _, p := range rest.server.networkSpec {
+	for _, p := range rest.server.peerSpec {
 		currentPeerId := strconv.FormatUint(rest.server.GetPeerID(p.RaftNetworkBind), 10)
 
 		cur := Info{
@@ -163,11 +177,15 @@ func (rest *Restful) Index(w http.ResponseWriter, r *http.Request) {
  */
 func (rest *Restful) leader(w http.ResponseWriter, r *http.Request) {
 
+	if rest == nil {
+		return
+	}
 	leaderId, _, ok := rest.server.RaftState().Status()
 
 	var resp LeaderRespond
 	// if this server is leader respond back
 	if ok {
+
 		resp.Leader = leaderId
 		resp.Success = true
 		resp.GrpcBinding = rest.server.serverSpec.GrpcNetworkBind
@@ -186,9 +204,18 @@ func (rest *Restful) leader(w http.ResponseWriter, r *http.Request) {
 
 	// if not get id of last know leader and respond back.
 	// leader can be partition but it best we could do
-	spec, leaderId, ok := rest.server.LastLeader()
+	if rest.server == nil {
+		return
+	}
+
+	spec, vip, ok := rest.server.LastLeader()
+	if ok == false {
+		glog.Infof("Can't find a leader")
+		return
+	}
+
 	resp.Success = false
-	resp.Leader = leaderId
+	resp.Leader = vip
 	resp.GrpcBinding = spec.GrpcNetworkBind
 	resp.RestBinding = spec.RestNetworkBind
 
@@ -205,6 +232,14 @@ func (rest *Restful) leader(w http.ResponseWriter, r *http.Request) {
 
  */
 func (rest *Restful) submit(w http.ResponseWriter, r *http.Request) {
+
+	if rest == nil {
+		http.Error(w, "Key not found", http.StatusNotFound)
+		return
+	}
+
+	rest.lock.Lock()
+	defer rest.lock.Unlock()
 
 	ctx := context.Background()
 
@@ -228,7 +263,7 @@ func (rest *Restful) submit(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	js, err := json.Marshal(submitResp)
 	if err != nil {
-		glog.Errorf("failed marshal respond")
+		glog.Errorf("failed marshal json respond")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -236,18 +271,64 @@ func (rest *Restful) submit(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusCreated)
 	_, err = w.Write(js)
 	if err != nil {
-		glog.Errorf("failed write json respond")
+		glog.Errorf("failed write json http respond")
 		http.Error(w, err.Error(), http.StatusBadRequest)
 	}
 }
 
-/*
+func Max(x, y int) int {
+	if x > y {
+		return x
+	}
+	return y
+}
 
- */
+/*
+	REST call , return chunk of log, default chunk size 5 last record.
+ 	if client need indicate size, it should pass logsize in request
+*/
 func (rest *Restful) getLog(w http.ResponseWriter, r *http.Request) {
+
 	log := rest.server.raftState.getLog()
-	for i, s := range log {
-		fmt.Fprintln(w, i, s.Term, s.Command)
+	w.Header().Set("Content-Type", "application/json")
+
+	vars := mux.Vars(r)
+	logSize := vars["logsize"]
+	limit := DefaultLogSize
+
+	if len(logSize) > 0 {
+		if i2, err := strconv.ParseInt(logSize, 10, 64); err == nil {
+			limit = int(i2)
+		}
+	}
+
+	var resp []LogRespond
+	chunkSize := Max(0, len(log)-limit)
+	for i := len(log) - 1; i >= chunkSize; i-- {
+		resp = append(resp, LogRespond{
+			Key:    log[i].Command.Key,
+			Value:  string(log[i].Command.Value),
+			Term:   log[i].Term,
+			Synced: true,
+		})
+	}
+
+	//
+	js, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respSize, err := w.Write(js)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if respSize == 0 {
+		http.Error(w, fmt.Errorf("empty respond").Error(), http.StatusInternalServerError)
+		return
 	}
 }
 
@@ -256,12 +337,25 @@ func (rest *Restful) getLog(w http.ResponseWriter, r *http.Request) {
 */
 func (rest *Restful) getValue(w http.ResponseWriter, r *http.Request) {
 
+	if rest == nil {
+		http.Error(w, "Key not found", http.StatusNotFound)
+		return
+	}
+
+	if rest.server == nil && rest.server.db == nil {
+		http.Error(w, "Key not found", http.StatusNotFound)
+		return
+	}
+
 	vars := mux.Vars(r)
 	key := vars["key"]
+	if len(key) == 0 {
+		return
+	}
 
 	submitResp, ok := rest.server.db.Get(key)
-	if ok != false {
-		http.Error(w, "Key not found", http.StatusNotFound)
+	if ok == false {
+		http.Error(w, "key not found", http.StatusNotFound)
 		return
 	}
 
@@ -272,18 +366,27 @@ func (rest *Restful) getValue(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = w.Write(js)
+	respSize, err := w.Write(js)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if respSize == 0 {
+		http.Error(w, "empty http respond", http.StatusInternalServerError)
+		return
+	}
 }
 
 /*
-	Rest call to shutdown server
+	REST call handle for shutdown server
 */
 func (rest *Restful) shutdown(w http.ResponseWriter, r *http.Request) {
 	rest.server.Shutdown()
 }
 
 /**
-Return all peer connection status
+Returns all peer connection status
 */
 func (rest *Restful) peerList(w http.ResponseWriter, r *http.Request) {
 
@@ -295,10 +398,64 @@ func (rest *Restful) peerList(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_, err = w.Write(js)
-
+	respSize, err := w.Write(js)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if respSize == 0 {
+		http.Error(w, fmt.Errorf("empty http respond").Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+/*
+	REST call, returns chunk of committed record from db, default chunk size 5 last record.
+*/
+func (rest *Restful) getCommitted(w http.ResponseWriter, r *http.Request) {
+
+	storageCopy := rest.server.db.GetCopy()
+	w.Header().Set("Content-Type", "application/json")
+
+	vars := mux.Vars(r)
+	logSize := vars["logsize"]
+	limit := DefaultLogSize
+
+	if len(logSize) > 0 {
+		if i2, err := strconv.ParseInt(logSize, 10, 64); err == nil {
+			limit = int(i2)
+		}
+	}
+
+	var resp []LogRespond
+	chunkSize := Max(0, len(storageCopy)-limit)
+
+	count := 0
+	for k, v := range storageCopy {
+		if count == chunkSize {
+			break
+		}
+		resp = append(resp, LogRespond{
+			Key:   k,
+			Value: string(v),
+		})
+	}
+
+	//
+	js, err := json.Marshal(resp)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	respSize, err := w.Write(js)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	if respSize == 0 {
+		http.Error(w, fmt.Errorf("empty respond").Error(), http.StatusInternalServerError)
 		return
 	}
 }

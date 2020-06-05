@@ -1,15 +1,18 @@
 package main
 
 import (
-	"../server"
-	"../server/artifacts"
 	"flag"
 	"fmt"
-	"github.com/golang/glog"
 	"log"
 	"net"
 	"os"
+
+	hs "../hash"
+	"../server"
+	"../server/artifacts"
+	"github.com/golang/glog"
 )
+
 //
 //var ports = map[int]string{
 //	0: ":50051",
@@ -41,7 +44,6 @@ func init() {
 	flag.Parse()
 }
 
-
 func main() {
 
 	var configFile = "config.yaml"
@@ -68,26 +70,27 @@ func main() {
 
 	networkSpec := make([]server.ServerSpec, 0)
 
-	var myID string
-	var myRest string
 	var myPort string
+	var raftBinding string
+	var restBinding string
 	var myNetworkSpec server.ServerSpec
 
 	for i, controller := range controllers {
 
-		myID = generateId(controllers[i].Address, controller.Port)
-		myRest = generateId(controllers[i].Address, controller.Rest)
+		raftBinding = generateId(controllers[i].Address, controller.Port)
+		restBinding = generateId(controllers[i].Address, controller.Rest)
 
 		myNetworkSpec = server.ServerSpec{
-			myID,
-			myRest,
-			"",
-			artifact.BaseDir,
-			"",
+			ServerID:        hs.Hash64(raftBinding),
+			RaftNetworkBind: raftBinding,
+			RestNetworkBind: restBinding,
+			GrpcNetworkBind: raftBinding,
+			Basedir:         artifact.BaseDir,
+			LogDir:          "",
 		}
 
-		if server.CheckSocket(myID)  && server.CheckSocket(myRest) {
-			glog.Infof("Found unused port, server id %s", myID)
+		if server.CheckSocket(raftBinding) && server.CheckSocket(restBinding) {
+			glog.Infof("Found unused port, server id %s", raftBinding)
 			myPort = controllers[i].Port
 			for p := 0; p < len(controllers); p++ {
 				if p != i {
@@ -95,9 +98,9 @@ func main() {
 					restBind := generateId(controllers[p].Address, controllers[p].Rest)
 
 					spec := server.ServerSpec{
-						RaftNetworkBind:  raftBind,
-						RestNetworkBind:  restBind,
-						GrpcNetworkBind: "",
+						RaftNetworkBind: raftBind,
+						RestNetworkBind: restBind,
+						GrpcNetworkBind: raftBind,
 					}
 					networkSpec = append(networkSpec, spec)
 				}
@@ -110,7 +113,7 @@ func main() {
 		log.Fatal("Error number of peer can't > than number of node in cluster.")
 	}
 
-	if len(myID) == 0 {
+	if len(raftBinding) == 0 {
 		glog.Fatal("Can't find free port. All port in use. ")
 	}
 

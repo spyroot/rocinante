@@ -11,8 +11,10 @@ import (
 	"time"
 
 	pb "../../api"
+	"../../pkg/color"
 	"github.com/golang/glog"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/connectivity"
 )
 
 // TODO add to peer list respond with server spec for auto discovery.
@@ -21,11 +23,33 @@ import (
 Server spec describe all api binding points
 */
 type ServerSpec struct {
+	// server id generate during start up, and it based on ip:port
+	ServerID uint64
+	// raft network bind ip:port
+	RaftNetworkBind string
+	// rest service bind ip:port
+	RestNetworkBind string
+	// grpc services bind ip:port
+	GrpcNetworkBind string
+	// base dir for a server. web template , logs etc
+	Basedir string
+	// base where to spool logs
+	LogDir string
+}
+
+/*
+	API endpoint for clients
+*/
+type ApiEndpoints struct {
 	RaftNetworkBind string
 	RestNetworkBind string
 	GrpcNetworkBind string
-	Basedir         string
-	LogDir          string
+}
+
+type PeerStatus struct {
+	Endpoints ApiEndpoints
+	// connectivity state based on grpc  idle, connected, ready etc
+	State connectivity.State
 }
 
 /**
@@ -73,9 +97,9 @@ type Server struct {
 
 	// a map hold all grpc connection to each server, a key is hash id
 	peerClient map[uint64]*grpc.ClientConn
-	// a slice that hold a server spec,  rest interface bind / base dir / log dir etc
-	networkSpec []ServerSpec
-	// this mainly to make grpc proto api happy // TODO
+
+	// a slice that hold a peer server spec,  rest interface bind / base dir / log dir etc
+	peerSpec []ServerSpec
 
 	// current server spec
 	serverSpec ServerSpec
@@ -135,9 +159,13 @@ func (s *Server) RequestVoteCall(ctx context.Context, vote *pb.RequestVote) (*pb
 */
 func (s *Server) LastLeader() (*ServerSpec, uint64, bool) {
 
+	if s == nil {
+		return nil, 0, false
+	}
+
 	for k, v := range s.peersHash {
 		if v == s.LastLeaderId {
-			for _, spec := range s.networkSpec {
+			for _, spec := range s.peerSpec {
 				if spec.RaftNetworkBind == k {
 					return &spec, s.LeaderId, true
 				}
@@ -163,15 +191,26 @@ func (s *Server) ReadCommits() {
 		timeout <- true
 	}()
 
-	var ok = false
-	for ok != true {
-		select {
-		case c := <-s.commitProducer:
-			glog.Infof("received from channel commit.", c.Index)
-			s.db.Set(c.Command.Key, c.Command.Value)
-		case <-timeout:
-			glog.Infof("read from channel timeout.")
-			ok = true
+	for {
+
+		var ok = false
+		for ok != true {
+			select {
+			case c := <-s.commitProducer:
+
+				msg := color.Green + "received from channel commit index" + color.Reset
+				glog.Infof("%s %d", msg, c.Index, c.Command.Key, c.Command.Value)
+
+				s.db.Set(c.Command.Key, c.Command.Value)
+				val, ok := s.db.Get(c.Command.Key)
+				if ok == false {
+					log.Fatal("Failed to store val", val)
+				}
+
+			case <-timeout:
+				glog.Infof("read from channel timeout.")
+				ok = true
+			}
 		}
 	}
 }
@@ -256,10 +295,6 @@ func (s *Server) SubmitCall(ctx context.Context, req *pb.SubmitEntry) (*pb.Submi
 		return nil, fmt.Errorf("server uninitilized")
 	}
 
-	//key := pb.SubmitEntry.GetCommand().Key
-	//val := pb.SubmitEntry.GetCommand().Value
-	//s.storage[pb.SubmitEntry] = pb.SubmitEntry.GetCommand().Key
-
 	ok := s.raftState.Submit(req.Command)
 	if ok == false {
 		glog.Errorf("[rpc server:] submit failed")
@@ -268,7 +303,7 @@ func (s *Server) SubmitCall(ctx context.Context, req *pb.SubmitEntry) (*pb.Submi
 
 	glog.Infof("replay for submit req [%v]", ok)
 
-	leaderEndpoint := s.networkSpec[s.LeaderId].RaftNetworkBind
+	leaderEndpoint := s.peerSpec[s.LeaderId].RaftNetworkBind
 
 	return &pb.SubmitReply{
 		Success:  ok,
@@ -356,7 +391,9 @@ func (s *Server) GetPeerID(bind string) uint64 {
 func NewServer(serverSpec ServerSpec, peers []ServerSpec, port string, ready <-chan interface{}) (*Server, error) {
 
 	s := new(Server)
+	s.db = NewVolatileStorage()
 	s.serverId = hash(serverSpec.RaftNetworkBind)
+	serverSpec.ServerID = s.serverId
 	s.serverBind = serverSpec.RaftNetworkBind
 	s.serverSpec = serverSpec
 	s.isDead = false
@@ -370,13 +407,14 @@ func NewServer(serverSpec ServerSpec, peers []ServerSpec, port string, ready <-c
 	s.peersHash = make(map[string]uint64)
 	s.peerClient = make(map[uint64]*grpc.ClientConn)
 
-	s.networkSpec = peers
+	s.peerSpec = peers
 
-	// for each server we generate hash
-	for _, spec := range peers {
-		h := hash(spec.RaftNetworkBind)
-		glog.Infof("Server peers %v id %v", spec.RaftNetworkBind, h)
-		s.peersHash[spec.RaftNetworkBind] = hash(spec.RaftNetworkBind)
+	// for each server we generate hash that form server id
+	for i, spec := range peers {
+		peerHash := hash(spec.RaftNetworkBind)
+		glog.Infof("Server peers %v id %v", spec.RaftNetworkBind, peerHash)
+		s.peersHash[spec.RaftNetworkBind] = peerHash
+		s.peerSpec[i].ServerID = peerHash
 	}
 
 	s.port = port
@@ -504,7 +542,7 @@ func (s *Server) Serve() error {
 		glog.Infof("[rpc server] Server started.")
 		defer s.wait.Done()
 
-		for _, peerId := range s.networkSpec {
+		for _, peerId := range s.peerSpec {
 			// open connection to each peer in separate thread and block
 			go func(p ServerSpec) {
 				glog.Infof("Attempting connect to a peer %v", p.RaftNetworkBind)
@@ -594,7 +632,7 @@ func (s *Server) RemoteCall(peerID uint64, args interface{}) (interface{}, error
 			glog.Infof("[rpc server] sending rpc vote msg : my id %v to %v\n", s.serverBind, peer.Target())
 			replay, err := c.RequestVoteCall(ctx, vote)
 			if err != nil {
-				glog.Error("[rpc server] cm returned error %v", err)
+				glog.Error("[rpc server] cm returned error ", err)
 				return nil, err
 			}
 			var rr RequestVoteReply
@@ -659,13 +697,48 @@ func (s *Server) Shutdown() {
 	close(s.quit)
 }
 
-//
-func (s *Server) PeerStatus() map[uint64]string {
+/**
 
-	connStatus := make(map[uint64]string)
+ */
+func (s *Server) getPeerSpec(id uint64) (*ServerSpec, error) {
 
+	for _, v := range s.peerSpec {
+		if v.ServerID == id {
+			return &v, nil
+		}
+	}
+	return nil, fmt.Errorf("peer not found")
+}
+
+/**
+  Return peer status
+*/
+func (s *Server) PeerStatus() map[uint64]PeerStatus {
+
+	connStatus := make(map[uint64]PeerStatus)
 	for k, v := range s.peerClient {
-		connStatus[k] = v.GetState().String()
+		peer, err := s.getPeerSpec(k)
+		if err != nil {
+			log.Fatal("incorrect state.")
+		}
+
+		connStatus[k] = PeerStatus{
+			Endpoints: ApiEndpoints{
+				RaftNetworkBind: peer.RaftNetworkBind,
+				RestNetworkBind: peer.RestNetworkBind,
+				GrpcNetworkBind: peer.GrpcNetworkBind,
+			},
+			State: v.GetState(),
+		}
+	}
+
+	connStatus[s.ServerID()] = PeerStatus{
+		Endpoints: ApiEndpoints{
+			RaftNetworkBind: s.serverSpec.RaftNetworkBind,
+			RestNetworkBind: s.serverSpec.RestNetworkBind,
+			GrpcNetworkBind: s.serverSpec.GrpcNetworkBind,
+		},
+		State: connectivity.Ready,
 	}
 
 	return connStatus

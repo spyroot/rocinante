@@ -16,6 +16,7 @@ import (
 
 	pb "../../api"
 	"../../pkg/color"
+	hs "../hash"
 	"github.com/golang/glog"
 )
 
@@ -30,9 +31,9 @@ const (
 )
 
 // factor used if we want slow down election,  default is 1
-const FACTOR = 10
-const REFESH_TIME = 10 * FACTOR
-const HEARBEAT_INTERVAL = 50 * FACTOR
+const FACTOR = 30
+const RefreshTime = 10 * FACTOR
+const HeartbeatInterval = 50 * FACTOR
 
 const (
 	RequestVoteReq ProtocolMessage = iota
@@ -101,10 +102,13 @@ type RaftProtocol struct {
 func (raft *RaftProtocol) RequestVote(vote *pb.RequestVote) (RequestVoteReply, error) {
 
 	var reply RequestVoteReply
+
 	if raft == nil {
 		reply.VoteGranted = true
 		return reply, nil
 	}
+
+	//	myLastTerm := raft.currentTerm
 
 	raft.mu.Lock()
 	myLastTerm := raft.currentTerm
@@ -112,6 +116,7 @@ func (raft *RaftProtocol) RequestVote(vote *pb.RequestVote) (RequestVoteReply, e
 	raft.mu.Unlock()
 
 	// if term outdated make myself follower
+
 	if vote.Term > myLastTerm {
 		raft.log("... term out of date")
 		raft.makeFollower(vote.Term)
@@ -157,7 +162,7 @@ func (raft *RaftProtocol) isDead() bool {
 	return false
 }
 
-func intMin(a, b uint64) uint64 {
+func uint64Min(a, b uint64) uint64 {
 	if a < b {
 		return a
 	}
@@ -176,16 +181,16 @@ func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntrie
 		return &reply, fmt.Errorf("cm state is dead")
 	}
 
-	oldTerm, oldState, _ := raft.getState()
-	// If RPC request or response contains term T > currentTerm:
-	// set currentTerm = T, convert to follower
-	if req.Term > oldTerm {
-		raft.log("my term is out of dated, my term %v, leader term %v", oldTerm, req.Term)
+	if req.Term > raft.currentTerm {
+		//raft.log("my term is out of dated, my term %v, leader term %v", oldTerm, req.Term)
 		raft.makeFollower(req.Term)
 	}
 
+	oldTerm, oldState, _ := raft.getState()
+	// If RPC request or response contains term T > currentTerm:
+	// set currentTerm = T, convert to follower
+
 	// we read it again
-	oldTerm, oldState, _ = raft.getState()
 	reply.Success = false
 	if req.Term == oldTerm {
 		raft.log("... term is up to date.")
@@ -204,34 +209,30 @@ func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntrie
 
 			reply.Success = true
 
-			logInsertIndex := req.PrevLogIndex + 1
-			newEntriesIndex := 0
+			lowerBound := req.PrevLogIndex + 1
+			upperBound := 0
 
 			for {
-				if logInsertIndex >= uint64(len(raft.stateLog)) || newEntriesIndex >= len(req.Entries) {
+				if lowerBound >= uint64(len(raft.stateLog)) || upperBound >= len(req.Entries) {
 					break
 				}
-				if raft.stateLog[logInsertIndex].Term != req.Entries[newEntriesIndex].Term {
+				if raft.stateLog[lowerBound].Term != req.Entries[upperBound].Term {
 					break
 				}
-				logInsertIndex++
-				newEntriesIndex++
+				lowerBound++
+				upperBound++
 			}
 
-			//  At the end of this loop:
-			// - logInsertIndex points at the end of the log, or an index where the
-			//   term mismatches with an entry from the leader
-			// - newEntriesIndex points at the end of Entries, or an index where the
-			//   term mismatches with the corresponding log entry
-			if newEntriesIndex < len(req.Entries) {
-				raft.log("... inserting entries %v from index %d", req.Entries[newEntriesIndex:], logInsertIndex)
-				raft.stateLog = append(raft.stateLog[:logInsertIndex], req.Entries[newEntriesIndex:]...)
+			// lower and upper bound
+			if upperBound < len(req.Entries) {
+				raft.log("... inserting entries %v from index %d", req.Entries[upperBound:], lowerBound)
+				raft.stateLog = append(raft.stateLog[:lowerBound], req.Entries[upperBound:]...)
 				raft.log("... log is now: %v", raft.log)
 			}
 
 			// Send data commit index to a buffer
 			if req.LeaderCommit > raft.volatileState.CommitIndex() {
-				raft.volatileState.setCommitIndex(intMin(req.LeaderCommit, uint64(len(raft.stateLog)-1)))
+				raft.volatileState.setCommitIndex(uint64Min(req.LeaderCommit, uint64(len(raft.stateLog)-1)))
 				raft.log("... setting commitIndex=%d", raft.volatileState.CommitIndex())
 				raft.commitReadyChan <- CommitReady{
 					Term: oldTerm,
@@ -330,14 +331,14 @@ func (raft *RaftProtocol) log(format string, args ...interface{}) {
 func (raft *RaftProtocol) electionTimeout() time.Duration {
 	if raft.Drop == false {
 		if raft.Jitter == true {
-			return time.Millisecond * time.Duration((HEARBEAT_INTERVAL*3)+rand.Intn(HEARBEAT_INTERVAL*3))
+			return time.Millisecond * time.Duration((HeartbeatInterval*3)+rand.Intn(HeartbeatInterval*3))
 		} else {
-			return time.Millisecond * time.Duration(HEARBEAT_INTERVAL*3)
+			return time.Millisecond * time.Duration(HeartbeatInterval*3)
 		}
 	} else {
 		// sleep and than respond
 		time.Sleep(60 * time.Second)
-		return time.Millisecond * time.Duration(HEARBEAT_INTERVAL*3)
+		return time.Millisecond * time.Duration(HeartbeatInterval*3)
 	}
 }
 
@@ -383,7 +384,7 @@ func (raft *RaftProtocol) isElectionReset(duration time.Duration) bool {
 	defer raft.mu.Unlock()
 	if elapsed := time.Since(raft.electionResetEvent); elapsed >= duration {
 		delta := elapsed - duration
-		raft.log("election expired -> my state %s delta %d", raft.state, delta.Seconds())
+		raft.log("election expired -> my state %s delta %v", raft.state, delta.Seconds())
 		return true
 	}
 	return false
@@ -404,7 +405,7 @@ func (raft *RaftProtocol) runElectionTimer() {
 	// - the election timer expires and this CM becomes a candidate
 	// In a follower, this typically keeps running in the background for the
 	// duration of the CM's lifetime.
-	ticker := time.NewTicker(REFESH_TIME * time.Millisecond)
+	ticker := time.NewTicker(RefreshTime * time.Millisecond)
 	defer ticker.Stop()
 	for {
 		<-ticker.C
@@ -412,13 +413,13 @@ func (raft *RaftProtocol) runElectionTimer() {
 		raft.mu.Lock()
 		currentState := raft.state
 		raft.log("time to elect, kicked in (%v), term=%d myrole=%v", timeoutDuration, termStarted, currentState)
+		raft.mu.Unlock()
+
 		// if we wake up and state changed, with raw from election
 		if oldState != raft.state {
 			raft.log("withdrawing %v current state.", currentState)
-			raft.mu.Unlock()
 			return
 		}
-		raft.mu.Unlock()
 
 		// wake up, check state.
 		if !raft.isExpired(termStarted) {
@@ -607,7 +608,7 @@ func (raft *RaftProtocol) startLeader() {
 	raft.makeLeader()
 
 	go func() {
-		ticker := time.NewTicker(HEARBEAT_INTERVAL * time.Millisecond)
+		ticker := time.NewTicker(HeartbeatInterval * time.Millisecond)
 		defer ticker.Stop()
 
 		// Send periodic heartbeats, as long as still leader.
@@ -661,7 +662,6 @@ func (raft *RaftProtocol) broadcastMsg(peer uint64, term uint64) error {
 
 	myState := raft.state
 	entries := raft.stateLog[nextIndex:]
-	raft.mu.Unlock()
 
 	appendEntry := &pb.AppendEntries{
 		Term:         term,
@@ -671,12 +671,13 @@ func (raft *RaftProtocol) broadcastMsg(peer uint64, term uint64) error {
 		Entries:      entries,
 		LeaderCommit: raft.volatileState.CommitIndex(),
 	}
+	raft.mu.Unlock()
 
 	// send gRPC call and we DON'T hold a lock.
-	raft.log("%v sending append entries -> peer %v: ni=%d, args=%+v", color.Red+myState.String()+color.Reset, peer, 0, appendEntry)
+	raft.log("%v sending append entries -> peer %v: ni=%d, args=%+v", color.Red+myState.String()+color.Reset, peer, nextIndex, hs.AsSha256(hs.GenericHash(appendEntry)))
 	rpcReply, err := raft.server.RemoteCall(peer, appendEntry)
 	if err != nil {
-		raft.log("invalid respond to an rpc call peer %v: nextIndex=%d, args=%+v err=[%+v]", peer, 0, appendEntry, err)
+		raft.log("invalid respond to an rpc call peer %v: nextIndex=%d, args=%+v err=[%+v]", peer, 0, appendEntry.LeaderCommit, err)
 		return nil
 	}
 
@@ -765,6 +766,10 @@ func (raft *RaftProtocol) Status() (id uint64, term uint64, isLeader bool) {
 Dumps entire log, it mainly for debug purpose.
 */
 func (raft *RaftProtocol) getLog() []*pb.LogEntry {
+	if raft == nil {
+		return nil
+	}
+
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
 	return raft.stateLog
@@ -774,6 +779,9 @@ func (raft *RaftProtocol) getLog() []*pb.LogEntry {
   Submit a log entry as key value pair to log
 */
 func (raft *RaftProtocol) Submit(kv *pb.KeyValuePair) bool {
+	if raft == nil {
+		return false
+	}
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
 

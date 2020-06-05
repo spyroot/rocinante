@@ -56,7 +56,6 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}) (func(t *
 
 	t.Log("setup server")
 
-
 	var wg sync.WaitGroup
 
 	for i, controller := range controllers {
@@ -66,18 +65,19 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}) (func(t *
 		myRest := GenerateId(controllers[i].Address, controller.Rest)
 
 		myNetworkSpec := ServerSpec{
-			myID,
+			hash(myID),
 			myRest,
 			"",
 			artifact.BaseDir,
+			"",
 			"",
 		}
 
 		// if both port area free add to peer list, all other peers
 		// final result should:
 		// myNetworkSpec hold server spec
-		// networkSpec hold all other peer spec
-		if CheckSocket(myID)  && CheckSocket(myRest) {
+		// peerSpec hold all other peer spec
+		if CheckSocket(myID) && CheckSocket(myRest) {
 			glog.Infof("Found unused port, server id ", myID)
 			myPort := controllers[i].Port
 			for p := 0; p < len(controllers); p++ {
@@ -85,8 +85,8 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}) (func(t *
 					raftBind := GenerateId(controllers[p].Address, controllers[p].Port)
 					restBind := GenerateId(controllers[p].Address, controllers[p].Rest)
 					spec := ServerSpec{
-						RaftNetworkBind:  raftBind,
-						RestNetworkBind:  restBind,
+						RaftNetworkBind: raftBind,
+						RestNetworkBind: restBind,
 						GrpcNetworkBind: "",
 					}
 					networkSpec = append(networkSpec, spec)

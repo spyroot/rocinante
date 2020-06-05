@@ -12,8 +12,9 @@ Generic interface for storage
 type Storage interface {
 	Set(key string, value []byte)
 	Get(key string) ([]byte, bool)
-	HasKey() bool
+	HasKey(key string) bool
 	HasData() bool
+	GetCopy() map[string][]byte
 }
 
 type FileStorage struct {
@@ -86,12 +87,20 @@ type VolatileStorage struct {
 	storage map[string][]byte
 }
 
-func NeInMemory() *VolatileStorage {
+/**
+
+ */
+func NewVolatileStorage() *VolatileStorage {
 	m := make(map[string][]byte)
 	return &VolatileStorage{storage: m}
 }
 
 func (vs *VolatileStorage) Get(key string) ([]byte, bool) {
+
+	if vs == nil {
+		return nil, false
+	}
+
 	vs.mutex.Lock()
 	defer vs.mutex.Unlock()
 	v, found := vs.storage[key]
@@ -99,12 +108,22 @@ func (vs *VolatileStorage) Get(key string) ([]byte, bool) {
 }
 
 func (vs *VolatileStorage) Set(key string, value []byte) {
+
+	if vs == nil {
+		return
+	}
+
 	vs.mutex.Lock()
 	defer vs.mutex.Unlock()
 	vs.storage[key] = value
 }
 
 func (vs *VolatileStorage) HasKey(key string) bool {
+
+	if vs == nil {
+		return false
+	}
+
 	vs.mutex.Lock()
 	defer vs.mutex.Unlock()
 	if _, ok := vs.storage[key]; ok {
@@ -114,9 +133,31 @@ func (vs *VolatileStorage) HasKey(key string) bool {
 }
 
 func (vs *VolatileStorage) HasData() bool {
+
+	if vs == nil {
+		return false
+	}
+
 	vs.mutex.Lock()
 	defer vs.mutex.Unlock()
 	return len(vs.storage) > 0
+}
+
+/**
+  Slow method , it mainly good for debug in case
+  we wat compare entire map
+*/
+func (vs *VolatileStorage) GetCopy() map[string][]byte {
+	vs.mutex.Lock()
+	defer vs.mutex.Unlock()
+
+	vsCopy := make(map[string][]byte)
+	// Copy from the original map to the target map
+	for key, value := range vs.storage {
+		vsCopy[key] = value
+	}
+
+	return vsCopy
 }
 
 // Encoding the m
