@@ -271,7 +271,7 @@ func (r *RestClient) GetPeerList() (map[string]map[uint64]server.PeerStatus, err
 /**
 REST call to retrieve value from a server
 */
-func (r *RestClient) Get(key string) (*server.ValueRespond, error) {
+func (r *RestClient) Get(key string) (*server.HttpValueRespond, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultHttpTimeout*time.Millisecond)
 	defer cancel()
@@ -298,7 +298,7 @@ func (r *RestClient) Get(key string) (*server.ValueRespond, error) {
 		return nil, fmt.Errorf("failed retieve value %v", err)
 	}
 
-	var respond server.ValueRespond
+	var respond server.HttpValueRespond
 	respond.Success = false
 	if resp.StatusCode == http.StatusOK {
 		glog.Infof("Got back status %v", resp.StatusCode)

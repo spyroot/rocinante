@@ -9,13 +9,18 @@
 package tests
 
 import (
+	"bytes"
+	"context"
+	b64 "encoding/base64"
 	"flag"
 	"fmt"
 	"log"
+	"math/rand"
 	"sync"
 	"testing"
 	"time"
 
+	pb "../../api"
 	"../client"
 	"../server"
 )
@@ -52,8 +57,6 @@ Simple leader election test.
 */
 func TestLeaderElection(t *testing.T) {
 
-	defer seq()()
-
 	tests := []struct {
 		name    string
 		timeout time.Duration // second, ms etc
@@ -78,7 +81,6 @@ func TestLeaderElection(t *testing.T) {
 	if len(servers) == 0 {
 		t.Errorf("zero server runing")
 	}
-
 	if TestVerbose {
 		t.Log("Number of servers", len(servers))
 	}
@@ -86,6 +88,8 @@ func TestLeaderElection(t *testing.T) {
 	// execute tests
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+
+			defer seq()()
 
 			var converged = false
 			var currentLeader uint64 = 0
@@ -157,19 +161,17 @@ func TestLeaderElection(t *testing.T) {
 	}
 
 	// we need wait a bit so all port released back to tcp stack
-	time.Sleep(1 * time.Second)
+	time.Sleep(2 * time.Second)
 }
 
 /**
-    Test start 3 server.
+    Test start with 3 server.
 	- wait to election to converge
 	- fail one and check re-election. We expect one of the node switch.
 	- Note if run all test at same time,
       TCP stack need release all ports.
 */
 func TestLeaderElection2(t *testing.T) {
-
-	defer seq()()
 
 	tests := []struct {
 		name    string
@@ -178,7 +180,7 @@ func TestLeaderElection2(t *testing.T) {
 		wantErr bool
 	}{
 		{ // test
-			name:    "basic leader election",
+			name:    "basic leader election2",
 			timeout: 1 * time.Second, // two second
 			repeat:  10,
 			wantErr: true,
@@ -199,10 +201,13 @@ func TestLeaderElection2(t *testing.T) {
 
 	// execute tests
 	for _, tt := range tests {
+
 		t.Run(tt.name, func(t *testing.T) {
+			defer seq()()
 
 			var converged = false
 			var currentLeader uint64 = 0
+
 			// wait for all server to converge
 			for i := 0; i < tt.repeat && converged == false; i++ {
 				// go sleep , wake up and check all 3 servers
@@ -210,9 +215,13 @@ func TestLeaderElection2(t *testing.T) {
 				<-ticker.C
 				for _, s := range servers {
 					leaderId, _, isLeader := s.RaftState().Status()
-					t.Log("node stats", leaderId, isLeader)
+					if TestVerbose {
+						t.Log("node stats", leaderId, isLeader)
+					}
 					if isLeader == true {
-						t.Log("leader elected", leaderId)
+						if TestVerbose {
+							t.Log("leader elected", leaderId)
+						}
 						currentLeader = leaderId
 						converged = true
 						break
@@ -230,11 +239,12 @@ func TestLeaderElection2(t *testing.T) {
 			numLeaders := 0
 			var convergedTerm uint64 = 0
 			for _, s := range servers {
+				// get current server status if leader count
 				_, term, isLeader := s.RaftState().Status()
 				if isLeader == true {
 					numLeaders++
 				}
-				// check we converge on the term
+				// check what term did cluster converged.
 				if convergedTerm == 0 {
 					convergedTerm = term
 				} else {
@@ -244,6 +254,7 @@ func TestLeaderElection2(t *testing.T) {
 				}
 			}
 
+			// check
 			if numLeaders > 1 {
 				t.Errorf("expected single leader in the cluster")
 			}
@@ -251,13 +262,13 @@ func TestLeaderElection2(t *testing.T) {
 			// re-election, shutdown a node
 			for _, s := range servers {
 				_, _, isLeader := s.RaftState().Status()
-				// shutdown.
+				// shutdown primary server
 				if isLeader {
 					s.Shutdown()
 				}
 			}
 
-			// repeat, we should have two server and leader re-elected
+			// re check who is leader now, we should have two server and leader re-elected
 			oldLeader := currentLeader
 			currentLeader = 0
 			converged = false
@@ -268,7 +279,9 @@ func TestLeaderElection2(t *testing.T) {
 				for _, s := range servers {
 					leaderId, _, isLeader := s.RaftState().Status()
 					if isLeader == true {
-						t.Log("new leader elected", leaderId, oldLeader)
+						if TestVerbose {
+							t.Log("new leader elected", leaderId, oldLeader)
+						}
 						currentLeader = leaderId
 						converged = true
 						break
@@ -281,7 +294,6 @@ func TestLeaderElection2(t *testing.T) {
 			if currentLeader == 0 {
 				t.Errorf("leader id (type %v), expected none zero id", currentLeader)
 			}
-
 			// end
 		})
 
@@ -296,6 +308,8 @@ func TestLeaderElection2(t *testing.T) {
 	for _, s := range servers {
 		s.Shutdown()
 	}
+
+	time.Sleep(2 * time.Second)
 }
 
 /**
@@ -339,6 +353,8 @@ func TestLeaderStartStop(t *testing.T) {
 	// execute tests
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+
+			defer seq()()
 
 			var converged = false
 			var currentLeader uint64 = 0
@@ -442,7 +458,6 @@ func TestLeaderStartStop(t *testing.T) {
 			for i := 0; i < tt.repeat && converged == false; i++ {
 				// go sleep , wake up and check all 3 servers
 				ticker := time.NewTicker(tt.timeout)
-				defer ticker.Stop()
 				<-ticker.C
 				for _, s := range servers {
 					leaderId, _, isLeader := s.RaftState().Status()
@@ -453,6 +468,7 @@ func TestLeaderStartStop(t *testing.T) {
 						break
 					}
 				}
+				ticker.Stop()
 			}
 
 			// otherwise passed
@@ -483,7 +499,7 @@ func TestLeaderStartStop(t *testing.T) {
 func checkLeader(t *testing.T, repeat int, timeout time.Duration, servers []*server.Server, verbose bool) (bool, uint64) {
 
 	var converged bool = false
-	var current_leader uint64 = 0
+	var currentLeader uint64 = 0
 	// repeat tt.repeat times
 	for i := 0; i < repeat && converged == false; i++ {
 		ticker := time.NewTicker(timeout)
@@ -497,7 +513,7 @@ func checkLeader(t *testing.T, repeat int, timeout time.Duration, servers []*ser
 				if verbose {
 					t.Log("leader elected", leaderId)
 				}
-				current_leader = leaderId
+				currentLeader = leaderId
 				converged = true
 				break
 			}
@@ -506,8 +522,8 @@ func checkLeader(t *testing.T, repeat int, timeout time.Duration, servers []*ser
 	}
 
 	// otherwise passed
-	if current_leader == 0 {
-		t.Errorf("leader id (type %v), expected none zero id", current_leader)
+	if currentLeader == 0 {
+		t.Errorf("leader id (type %v), expected none zero id", currentLeader)
 	}
 
 	// we check that only one server is leader
@@ -532,7 +548,7 @@ func checkLeader(t *testing.T, repeat int, timeout time.Duration, servers []*ser
 		t.Errorf("expected single leader in the cluster")
 	}
 
-	return true, current_leader
+	return true, currentLeader
 }
 
 /**
@@ -541,8 +557,6 @@ func checkLeader(t *testing.T, repeat int, timeout time.Duration, servers []*ser
 */
 func TestSubmit(t *testing.T) {
 
-	defer seq()()
-
 	tests := []struct {
 		name    string
 		timeout time.Duration // second, ms etc
@@ -550,7 +564,7 @@ func TestSubmit(t *testing.T) {
 		wantErr bool
 	}{
 		{ // test
-			name:    "basic leader election",
+			name:    "basic submit test",
 			timeout: 1 * time.Second, // two second
 			repeat:  10,
 			wantErr: true,
@@ -570,13 +584,14 @@ func TestSubmit(t *testing.T) {
 	// execute tests
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			defer seq()()
 
-			b, _ := checkLeader(t, tt.repeat, tt.timeout, servers, false)
+			b, _ := checkLeader(t, tt.repeat, tt.timeout, servers, TestVerbose)
 			if !b {
 				t.Error("failed select a leader.")
 			}
 
-			leader := getLeader(t, tt.repeat, tt.timeout, servers, false)
+			leader := getLeader(t, tt.repeat, tt.timeout, servers, TestVerbose)
 			apiEndpoint := leader.RESTEndpoint()
 
 			apiClient, err := client.NewRestClientFromUrl(apiEndpoint.RestNetworkBind)
@@ -585,7 +600,7 @@ func TestSubmit(t *testing.T) {
 				return
 			}
 
-			ok, err := storeAndCheck(t, apiClient, "test", "test123", 2000)
+			ok, err := storeAndCheck(t, apiClient, "test", "test123", 2000, TestVerbose)
 			if err != nil {
 				t.Error("failed test ", err)
 			}
@@ -593,13 +608,16 @@ func TestSubmit(t *testing.T) {
 				t.Error("failed fetch value ")
 			}
 
-			_ = CheckStorageConsistency(t, servers, false)
+			err = CheckStorageConsistency(t, servers, false)
+			if err != nil {
+				t.Error("failed consistency check", err)
+			}
 
-			////we check that all server serialized.
-			//err = checkConsistency(t, servers, false)
-			//if err != nil {
-			//	t.Error("consistency failed", err)
-			//}
+			//we check that all server serialized.
+			err = CheckConsistency(t, servers, false)
+			if err != nil {
+				t.Error("consistency failed", err)
+			}
 
 			// end
 		})
@@ -622,11 +640,357 @@ func TestSubmit(t *testing.T) {
 }
 
 /**
-Return leader after cluster converged
+    Test start 3 server,  fail one and check re-election , re-add back
+	Note if run all test at same time,  TCP stack need release all ports.
+*/
+func TestSubmit2(t *testing.T) {
+
+	tests := []struct {
+		name     string
+		timeout  time.Duration // second, ms etc
+		repeat   int           // how many time repeat
+		records  int
+		wantErr  bool
+		batch    bool          // batch load
+		wait     time.Duration // wait between request
+		deadline time.Duration
+	}{
+		{ // test
+			name:    "sequential submit 1000 ms wait 10 record",
+			timeout: 1 * time.Second, // two second
+			repeat:  10,
+			records: 10,
+			wantErr: false,
+			batch:   false,
+			wait:    1000,
+		},
+		{ // test
+			name:    "sequential submit 500 ms wait 10 record",
+			timeout: 1 * time.Second, // two second
+			repeat:  10,
+			records: 10,
+			wantErr: false,
+			batch:   false,
+			wait:    500,
+		},
+		{ // test
+			name:    "sequential 1000 records 500 ms wait 1000 record",
+			timeout: 1 * time.Second, // time to wait cluster to converge
+			repeat:  10,
+			records: 1000,
+			wantErr: false,
+			batch:   false,
+			wait:    500,
+		},
+		{ // test
+			name:     "sequential 10000 batch store 2 ms wait 10000 record",
+			timeout:  1 * time.Second, // time to wait cluster to converge
+			repeat:   10,
+			records:  100,
+			wantErr:  false,
+			batch:    true, // batch store , than check consistency
+			wait:     2,    // we ca use less RTT since no round trip need to fetch
+			deadline: 10,
+		},
+	}
+
+	time.Sleep(2 * time.Second)
+	quit := make(chan interface{})
+	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, false)
+	if err != nil {
+		t.Fatal("NewServer() error during setup", err)
+	}
+	if TestVerbose {
+		t.Log("Number of servers", len(servers))
+	}
+
+	defer seq()()
+
+	// execute tests
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+
+			rand.Seed(time.Now().UnixNano())
+
+			b, _ := checkLeader(t, tt.repeat, tt.timeout, servers, TestVerbose)
+			if !b {
+				t.Error("failed select a leader.")
+			}
+
+			leader := getLeader(t, tt.repeat, tt.timeout, servers, TestVerbose)
+			apiEndpoint := leader.RESTEndpoint()
+
+			apiClient, err := client.NewRestClientFromUrl(apiEndpoint.RestNetworkBind)
+			if err != nil {
+				t.Error("failed build api client ", err)
+				return
+			}
+
+			generatedKVs := make([]string, 0)
+			start := time.Now()
+			for i := 0; i < tt.records; i++ {
+				key := randSeq(12)
+				val := randSeq(12)
+				generatedKVs = append(generatedKVs, key)
+
+				if !tt.batch {
+					ok, err := storeAndCheck(t, apiClient, key, val, tt.wait, TestVerbose)
+					if err != nil {
+						t.Error("failed test ", err)
+					}
+					if ok == false {
+						t.Error("failed fetch value ")
+					}
+				} else {
+					ok, err := batchStore(t, apiClient, key, val, tt.wait, TestVerbose)
+					if err != nil {
+						t.Error("failed test ", err)
+					}
+					if ok == false {
+						t.Error("failed fetch value ")
+					}
+				}
+			}
+
+			for i, k := range generatedKVs {
+				encodedKey := b64.StdEncoding.EncodeToString([]byte(k))
+				generatedKVs[i] = encodedKey
+			}
+
+			elapsed := time.Since(start)
+			t.Logf("Took %s for %d average time", elapsed, tt.records)
+
+			var converged bool
+
+			if tt.batch {
+				start := time.Now()
+				for i := 0; i < tt.repeat; i++ {
+					converged = true
+					for _, k := range generatedKVs {
+						err := CheckKeyValConsistency(t, servers, k, tt.deadline, false)
+						if err != nil {
+							converged = false
+							break
+						}
+					}
+
+					if converged == true {
+						t.Logf("Took %s for %d average time", elapsed, tt.records)
+						break
+					}
+
+					elapsed := time.Since(start)
+					t.Logf("Took %s for records %d still not converged", elapsed, tt.records)
+					//
+					time.Sleep(10 * time.Second)
+				}
+			}
+			if converged == false {
+				t.Error("Cluster never converged", err)
+			}
+			// check store
+			err = CheckStorageConsistency(t, servers, false)
+			if err != nil {
+				t.Error("failed consistency check", err)
+			}
+			//we check that all server serialized.
+			err = CheckConsistency(t, servers, false)
+			if err != nil {
+				t.Error("consistency failed", err)
+			}
+			// end
+		})
+
+		// when all test are finished teardown and close a channels.
+		if i == len(tests)-1 {
+			t.Log("donn")
+			teardownTestCase(t)
+		}
+	}
+
+	// wait all test to finish
+	<-quit
+
+	if TestVerbose {
+		t.Log("Shutdown all servers.")
+	}
+
+	// shutdown all
+	for _, s := range servers {
+		s.Shutdown()
+	}
+
+	t.Log("Done.")
+}
+
+/**
+    Test start 3 server,  fail one and check re-election , re-add back
+	Note if run all test at same time,  TCP stack need release all ports.
+*/
+func TestSimpleAsyncGet(t *testing.T) {
+
+	tests := []struct {
+		name     string
+		timeout  time.Duration // second, ms etc
+		repeat   int           // how many time repeat
+		records  int
+		wantErr  bool
+		batch    bool          // batch load
+		wait     time.Duration // wait between request
+		deadline time.Duration
+	}{
+		{ // test
+			name:     "64 record 1 ms dead line",
+			timeout:  1 * time.Second, // time to wait cluster to converge
+			repeat:   10,              // converged for get value
+			records:  64,              // number of record
+			wantErr:  false,
+			batch:    true, // batch store , than check consistency
+			wait:     2,    // wait after store
+			deadline: 1,    // 1 ms
+		},
+		{ // test
+			name:     "1000 record 1 ms dead line ",
+			timeout:  1 * time.Second, // time to wait cluster to converge
+			repeat:   10,              // converged for get value
+			records:  1000,            // number of record
+			wantErr:  false,
+			batch:    true, // batch store , than check consistency
+			wait:     2,    // wait after store
+			deadline: 1,    // 1 ms
+		},
+		{ // test
+			name:     "10000 record 1 ms dead line ",
+			timeout:  1 * time.Second, // time to wait cluster to converge
+			repeat:   10,              // converged for get value
+			records:  10000,           // number of record
+			wantErr:  false,
+			batch:    true, // batch store , than check consistency
+			wait:     10,   // wait after store
+			deadline: 2,    // 1 ms
+		},
+		{ // test
+			name:     "100000 record 1 ms dead line ",
+			timeout:  1 * time.Second, // time to wait cluster to converge
+			repeat:   10,              // converged for get value
+			records:  100000,          // number of record
+			wantErr:  false,
+			batch:    true, // batch store , than check consistency
+			wait:     10,   // wait after store
+			deadline: 2,    // 1 ms
+		},
+	}
+
+	time.Sleep(2 * time.Second)
+	quit := make(chan interface{})
+	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, false)
+	if err != nil {
+		t.Fatal("NewServer() error during setup", err)
+	}
+	if TestVerbose {
+		t.Log("Number of servers", len(servers))
+	}
+
+	defer seq()()
+
+	// execute tests
+	for i, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+
+			rand.Seed(time.Now().UnixNano())
+
+			b, _ := checkLeader(t, tt.repeat, tt.timeout, servers, TestVerbose)
+			if !b {
+				t.Error("failed select a leader.")
+			}
+
+			leader := getLeader(t, tt.repeat, tt.timeout, servers, TestVerbose)
+			apiEndpoint := leader.RESTEndpoint()
+
+			apiClient, err := client.NewRestClientFromUrl(apiEndpoint.RestNetworkBind)
+			if err != nil {
+				t.Error("failed build api client", err)
+			}
+
+			generatedKVs := make([]string, 0)
+			for i := 0; i < tt.records; i++ {
+				key := randSeq(12)
+				val := randSeq(12)
+				generatedKVs = append(generatedKVs, key)
+				ok, err := batchStore(t, apiClient, key, val, tt.wait, TestVerbose)
+				if err != nil {
+					t.Error("failed test", err)
+				}
+				if ok == false {
+					t.Error("failed store key-value")
+				}
+			}
+
+			// encode all the keys
+			for i, k := range generatedKVs {
+				encodedKey := b64.StdEncoding.EncodeToString([]byte(k))
+				generatedKVs[i] = encodedKey
+			}
+
+			// wait a bit tt.wait time
+			time.Sleep(tt.wait * time.Second)
+
+			start := time.Now()
+			var converged = false
+
+			binaryConverged := tt.wait
+			for i := 0; i < tt.repeat; i++ {
+				converged = true
+				for _, k := range generatedKVs {
+					err := CheckKeyValConsistency(t, servers, k, tt.deadline, false)
+					if err != nil {
+						converged = false
+						break
+					}
+				}
+
+				if converged == true {
+					elapsed := time.Since(start)
+					t.Logf("Took %s for %d record. average time per lookup %d microsed",
+						elapsed, tt.records, elapsed.Microseconds()/int64(tt.records))
+					break
+				}
+
+				t.Logf("Took %s for records %d still.. not converged", time.Since(start), tt.records)
+				binaryConverged = binaryConverged * 2
+				time.Sleep(binaryConverged * time.Second)
+			}
+			// end
+		})
+
+		// when all test are finished teardown and close a channels.
+		if i == len(tests)-1 {
+			t.Log("done")
+			teardownTestCase(t)
+		}
+	}
+
+	// wait all test to finish
+	<-quit
+
+	if TestVerbose {
+		t.Log("Shutdown all servers.")
+	}
+
+	// shutdown all
+	for _, s := range servers {
+		s.Shutdown()
+	}
+
+	t.Log("Done.")
+}
+
+/**
+Should return a cluster leader after all node converge
 */
 func getLeader(t *testing.T, repeat int, timeout time.Duration, servers []*server.Server, verbose bool) *server.Server {
 
-	var converged bool = false
+	var converged = false
 	var currentLeader uint64 = 0
 
 	for i := 0; i < repeat && converged == false; i++ {
@@ -662,7 +1026,8 @@ func getLeader(t *testing.T, repeat int, timeout time.Duration, servers []*serve
 /**
 Store value in cluster , fetch it back after it committed and compare
 */
-func storeAndCheck(t *testing.T, apiClient *client.RestClient, key string, val string, wait time.Duration) (bool, error) {
+func storeAndCheck(t *testing.T, apiClient *client.RestClient,
+	key string, val string, wait time.Duration, verbose bool) (bool, error) {
 
 	if apiClient == nil {
 		return false, fmt.Errorf("failed client is nil")
@@ -677,6 +1042,9 @@ func storeAndCheck(t *testing.T, apiClient *client.RestClient, key string, val s
 		return false, fmt.Errorf("failed to store value")
 	}
 
+	if verbose {
+		t.Log("Key stored , going to fetch it back from cluster")
+	}
 	time.Sleep(wait * time.Millisecond)
 	resp, httpErr := apiClient.Get(key)
 
@@ -696,6 +1064,35 @@ func storeAndCheck(t *testing.T, apiClient *client.RestClient, key string, val s
 }
 
 /**
+Store value in cluster , fetch it back after
+it committed and compare.
+
+wait, wait a bit
+*/
+func batchStore(t *testing.T, apiClient *client.RestClient,
+	key string, val string, wait time.Duration, verbose bool) (bool, error) {
+
+	if apiClient == nil {
+		return false, fmt.Errorf("failed client is nil")
+	}
+
+	origVal := []byte(val)
+	ok, err := apiClient.Store(key, origVal)
+	if err != nil {
+		return false, err
+	}
+	if ok == false {
+		if verbose {
+			t.Log("no error but failed to store.")
+		}
+		return false, fmt.Errorf("failed to store value")
+	}
+
+	time.Sleep(wait * time.Millisecond)
+	return true, nil
+}
+
+/**
 	Check commit record in memory storage.
     Note test need wait a bit after commit, in order message populated
     in all cluster members
@@ -706,7 +1103,7 @@ func CheckStorageConsistency(t *testing.T, servers []*server.Server, verbose boo
 	var inMemorySize = make([]int, len(servers), len(servers))
 
 	// get all in memory db
-	for i, _ := range servers {
+	for i := range servers {
 		inMemoryStorage[i] = servers[i].GetInMemoryStorage()
 		inMemorySize[i] = len(inMemoryStorage[i])
 		if verbose {
@@ -717,9 +1114,104 @@ func CheckStorageConsistency(t *testing.T, servers []*server.Server, verbose boo
 	return nil
 }
 
+type void struct{}
+
 /**
 
  */
+func MissingValue(a, b []pb.LogEntry) ([]string, error) {
+
+	mapA := make(map[string]void, len(a))
+	var diffs []string
+
+	for i := range a {
+		mapA[a[i].Command.Key] = void{}
+	}
+
+	// find MissingValue values in a
+	for i := range b {
+		if _, ok := mapA[b[i].Command.Key]; !ok {
+			diffs = append(diffs, b[i].Command.Key)
+		}
+	}
+
+	if len(diffs) != 0 {
+		return diffs, nil
+	}
+
+	for i := range a {
+		diff := bytes.Compare(b[i].Command.Value, a[i].Command.Value)
+		if diff != 0 {
+			return diffs, fmt.Errorf("value missmatch")
+		}
+	}
+
+	return diffs, nil
+}
+
+/**
+Iterate over all server and checks given key and value
+in committed storage and log, if message consistent report true
+no error otherwise report error
+*/
+func CheckKeyValConsistency(t *testing.T, servers []*server.Server, key string, d time.Duration, verbose bool) error {
+
+	// copy all index maps from all servers
+	responds := make([]*server.GetValueRespond, len(servers))
+
+	var err error
+	for i, s := range servers {
+		ctx, cancel := context.WithTimeout(context.Background(), d*time.Millisecond)
+		if verbose {
+			t.Log("Checking key", key)
+		}
+		responds[i], err = s.GetValue(ctx, key)
+		if err != nil {
+			if verbose {
+				t.Logf("got error for key %v %v", key, err)
+			}
+			return err
+		}
+		if verbose {
+			t.Logf("Got respond back %d index in log %d", responds[i].Val, responds[i].Index)
+		}
+		cancel()
+	}
+
+	// we take from first respond and compare all should match,
+	// doesn't matter from whom we use for a reference value
+	val := responds[0].Val
+	index := responds[0].Index
+	success := responds[0].Success
+
+	for i := 1; i < len(responds); i++ {
+		diff := bytes.Compare(responds[i].Val, val)
+		if diff != 0 {
+			t.Logf("mistmatch between servers %v %v, expected %v got %v",
+				servers[0], servers[i], val, responds[i].Val)
+			return fmt.Errorf("mistmatch between servers %v %v, expected %v got %v",
+				servers[0], servers[i], val, responds[i].Val)
+		}
+		if responds[i].Index != index {
+			t.Logf("mistmatch between servers %v %v, expected %v got %v",
+				servers[0], servers[i], index, responds[i].Index)
+			return fmt.Errorf("mistmatch between servers %v %v, expected %v got %v",
+				servers[0], servers[i], index, responds[i].Index)
+		}
+		if responds[i].Success != success {
+			t.Logf("mistmatch between servers %v %v, expected %v got %v",
+				servers[0], servers[i], success, responds[i].Success)
+			return fmt.Errorf("mistmatch between servers %v %v, expected %v got %v",
+				servers[0], servers[i], success, responds[i].Success)
+		}
+	}
+
+	return nil
+}
+
+/**
+Check log consistency in all servers
+*/
 func CheckConsistency(t *testing.T, servers []*server.Server, verbose bool) error {
 
 	var copyNextIndex = make([]map[uint64]uint64, len(servers))
@@ -732,22 +1224,62 @@ func CheckConsistency(t *testing.T, servers []*server.Server, verbose bool) erro
 		copyNextIndex[i], copyMatchIndex[i] = s.RaftState().GetLogIndexCopy()
 		indexSize[i] = len(copyNextIndex[i])
 		matchSize[i] = len(copyMatchIndex[i])
-		t.Logf("index size %d match size %d", indexSize[i], matchSize[i])
+		//t.Logf("index size %d match size %d", indexSize[i], matchSize[i])
 	}
 
-	iSize := indexSize[0]
-	mSize := matchSize[0]
-	if verbose {
-		t.Logf("index size %d match size %d", iSize, matchSize)
-	}
-	for i, _ := range servers {
-		if iSize != indexSize[i] {
-			return fmt.Errorf("index size missmatch peer [%v] %d %d", servers[i].ServerID(), iSize, indexSize[i])
+	logEntry := make([][]pb.LogEntry, len(servers))
+	storageSize := -1
+
+	for i, s := range servers {
+		logEntry[i] = s.RaftState().GetLogCopy()
+		if storageSize == -1 {
+			storageSize = len(logEntry[i])
+		} else {
+			if storageSize != len(logEntry[i]) {
+				return fmt.Errorf("storages with a different sizez")
+			}
 		}
-		if mSize != matchSize[i] {
-			return fmt.Errorf("match index missmatch peer [%v] %d %d", servers[i].ServerID(), mSize, matchSize[i])
+
+		indexSize[i] = len(copyNextIndex[i])
+		matchSize[i] = len(copyMatchIndex[i])
+		if verbose {
+			t.Logf("commit storage size %d", len(logEntry[i]))
+		}
+	}
+
+	// compare log on all server list
+	for i := 0; i < len(servers)-1; i++ {
+		a := logEntry[i]
+		b := logEntry[i+1]
+		if verbose {
+			t.Log("checking servers log", servers[i].ServerID(), servers[i+1].ServerID())
+		}
+
+		diff, err := MissingValue(a, b)
+		if err != nil {
+			return err
+		}
+		if len(diff) > 0 {
+			return fmt.Errorf("storage has different keys")
 		}
 	}
 
 	return nil
+}
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
+
+var letters = []rune("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+
+/**
+  Generate random string
+*/
+func randSeq(n int) string {
+	b := make([]rune, n)
+	for i := range b {
+		b[i] = letters[rand.Intn(len(letters))]
+	}
+	return string(b)
 }

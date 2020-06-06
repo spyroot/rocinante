@@ -73,7 +73,7 @@ type LogRespond struct {
 	Synced bool
 }
 
-type ValueRespond struct {
+type HttpValueRespond struct {
 	// leader id
 	Value   []byte `json:"value"`
 	Success bool   `json:"success"`
@@ -364,14 +364,12 @@ func (rest *Restful) getValue(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "key not found", http.StatusNotFound)
 		return
 	}
-
-	respond := ValueRespond{
+	// serialize and respond
+	w.Header().Set("Content-Type", "application/json")
+	jsRespond, err := json.Marshal(HttpValueRespond{
 		Value:   submitResp,
 		Success: ok,
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	jsRespond, err := json.Marshal(respond)
+	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -419,7 +417,8 @@ func (rest *Restful) peerList(w http.ResponseWriter, r *http.Request) {
 }
 
 /*
-	REST call, returns chunk of committed record from db, default chunk size 5 last record.
+	REST call, returns chunk of committed record from db,
+	default chunk size 5 last records.
 */
 func (rest *Restful) getCommitted(w http.ResponseWriter, r *http.Request) {
 

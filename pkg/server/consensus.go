@@ -30,7 +30,7 @@ const (
 )
 
 // factor used if we want slow down election,  default is 1
-const FACTOR = 10
+const FACTOR = 1
 const REFESH_TIME = 10 * FACTOR
 const HEARBEAT_INTERVAL = 50 * FACTOR
 
@@ -123,7 +123,8 @@ func (raft *RaftProtocol) GetLogIndexCopy() (map[uint64]uint64, map[uint64]uint6
 }
 
 /*
-	Return copy of entire log.
+	Returns copy of entire log.  It mainly useful for unit testing
+    for consistency check
 */
 func (raft *RaftProtocol) GetLogCopy() []pb.LogEntry {
 
@@ -206,7 +207,9 @@ func (raft *RaftProtocol) RequestVote(vote *pb.RequestVote) (RequestVoteReply, e
 	return reply, nil
 }
 
-// Append entries handler return true if cm in a dead state.
+/**
+Handler for gRPC append entry
+*/
 func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntriesReply, error) {
 
 	var reply pb.AppendEntriesReply
@@ -240,11 +243,16 @@ func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntrie
 		defer raft.mu.Unlock()
 		raft.electionResetEvent = time.Now()
 
+		// predicate
+		// if req.PrevLogIndex == math.MaxUint64  server just started.
+		// Initial value is MaxUint64
+		//   or
+		// message prev log index is less than current size of current server log
+		// and term matched
 		if req.PrevLogIndex == math.MaxUint64 ||
 			(req.PrevLogIndex < uint64(len(raft.stateLog)) && req.PrevLogTerm == raft.stateLog[req.PrevLogIndex].Term) {
 
 			reply.Success = true
-
 			lowerBound := req.PrevLogIndex + 1
 			upperBound := 0
 
@@ -252,6 +260,7 @@ func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntrie
 				if lowerBound >= uint64(len(raft.stateLog)) || upperBound >= len(req.Entries) {
 					break
 				}
+				// compare term
 				if raft.stateLog[lowerBound].Term != req.Entries[upperBound].Term {
 					break
 				}
@@ -266,9 +275,13 @@ func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntrie
 			}
 
 			// Send data commit index to a buffer
+			// first case if leader commit index is > than this server
+			// second case if we just connected our our index is MaxUint64
+			// since we are not using original -1 from raft we need detect
+			// this case
 			if req.LeaderCommit > raft.volatileState.CommitIndex() ||
 				(req.LeaderCommit != math.MaxUint64 && raft.volatileState.CommitIndex() == math.MaxUint64) {
-				raft.volatileState.setCommitIndex(intMin(req.LeaderCommit, uint64(len(raft.stateLog)-1)))
+				raft.volatileState.setCommitIndex(uint64Min(req.LeaderCommit, uint64(len(raft.stateLog)-1)))
 				raft.log("... setting commitIndex=%d", raft.volatileState.CommitIndex())
 				raft.commitReadyChan <- CommitReady{
 					Term: oldTerm,
@@ -298,7 +311,6 @@ func (raft *RaftProtocol) AppendEntries(req *pb.AppendEntries) (*pb.AppendEntrie
 	// update term
 	reply.Term = oldTerm
 	raft.log("------> append replay term=%d status=%v", reply.Term, reply.Success)
-
 	return &reply, nil
 }
 
@@ -312,7 +324,10 @@ func (raft *RaftProtocol) isDead() bool {
 	return false
 }
 
-func intMin(a, b uint64) uint64 {
+/**
+
+ */
+func uint64Min(a, b uint64) uint64 {
 	if a < b {
 		return a
 	}
@@ -340,8 +355,8 @@ func (s ProtocolState) String() string {
 }
 
 /**
-
- */
+Returns new RAFT protocol module.
+*/
 func NewRaftProtocol(id uint64,
 	peers map[string]uint64,
 	server *Server, numPeer int,
@@ -388,6 +403,7 @@ func NewRaftProtocol(id uint64,
 		raft.runElectionTimer()
 	}()
 
+	// serialize channel
 	raft.commitChannel()
 
 	return raft, nil
@@ -404,32 +420,41 @@ func (raft *RaftProtocol) log(format string, args ...interface{}) {
  */
 func (raft *RaftProtocol) electionTimeout() time.Duration {
 	if raft.Drop == false {
+		// introduce original jitter
 		if raft.Jitter == true {
 			return time.Millisecond * time.Duration((HEARBEAT_INTERVAL*3)+rand.Intn(HEARBEAT_INTERVAL*3))
 		} else {
+			// introduce fix message rate
 			return time.Millisecond * time.Duration(HEARBEAT_INTERVAL*3)
 		}
 	} else {
-		// sleep and than respond
+		// introduce delay
 		time.Sleep(60 * time.Second)
 		return time.Millisecond * time.Duration(HEARBEAT_INTERVAL*3)
 	}
 }
 
-// Method check if we consensus need to choose new leader
+/*
+	Check if current state expired the predicate used
+    to check if we consensus need to choose new leader
+*/
 func (raft *RaftProtocol) isExpired(termStarted uint64) bool {
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
 
 	// state changed
 	if raft.state != Candidate && raft.state != Follower {
-		raft.log("in election state change state=%s, withdraw", raft.state)
+		if ElectionLog {
+			raft.log("in election state change state=%s, withdraw", raft.state)
+		}
 		return false
 	}
 
 	// term change
 	if termStarted != raft.currentTerm {
-		raft.log("in election term changed from %d to %d, withdraw", termStarted, raft.currentTerm)
+		if ElectionLog {
+			raft.log("in election term changed from %d to %d, withdraw", termStarted, raft.currentTerm)
+		}
 		return false
 	}
 
@@ -474,11 +499,6 @@ func (raft *RaftProtocol) runElectionTimer() {
 
 	raft.log("election started (%v), term=%d", timeoutDuration, termStarted)
 
-	// This loops until either:
-	// - we discover the election timer is no longer needed, or
-	// - the election timer expires and this CM becomes a candidate
-	// In a follower, this typically keeps running in the background for the
-	// duration of the CM's lifetime.
 	ticker := time.NewTicker(REFESH_TIME * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -504,8 +524,8 @@ func (raft *RaftProtocol) runElectionTimer() {
 			break
 		}
 
-		// Start an election if we haven't heard from a leader or haven't voted for
-		// someone for the duration of the timeout.
+		// Start an election, if we haven't heard from a leader or haven't voted for
+		// someone for the duration of the timeout,  start election.
 		if raft.isElectionReset(timeoutDuration) {
 			raft.startElection()
 			break
@@ -523,7 +543,12 @@ func (raft *RaftProtocol) isCandidate() bool {
 	return true
 }
 
-//
+/*
+ 	Atomically update a vote and send back to a caller.
+	Vote counted only for a current term, if we count a term while
+    term update , server need bounce from election to next election
+	cycle.
+*/
 func (raft *RaftProtocol) gotVote(currentTerm uint64, votes uint64, reply *RequestVoteReply) uint64 {
 
 	raft.mu.Lock()
@@ -538,8 +563,8 @@ func (raft *RaftProtocol) gotVote(currentTerm uint64, votes uint64, reply *Reque
 }
 
 /**
-
- */
+Atomically update next term
+*/
 func (raft *RaftProtocol) newTerm() {
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
@@ -547,7 +572,8 @@ func (raft *RaftProtocol) newTerm() {
 }
 
 /**
-Method return last last long index and term
+Method returns last last long index and term in the log
+Each log entry has a term based on spec.
 */
 func (raft *RaftProtocol) lastLogIndexAndTerm() (uint64, uint64) {
 
@@ -562,7 +588,9 @@ func (raft *RaftProtocol) lastLogIndexAndTerm() (uint64, uint64) {
 	return uint64(lastIndex), raft.stateLog[lastIndex].Term
 }
 
-// startElection starts a new election with this CM as a candidate.
+/**
+
+ */
 func (raft *RaftProtocol) startElection() {
 
 	electionTerm := raft.readCurrentTerm()
@@ -580,8 +608,10 @@ func (raft *RaftProtocol) startElection() {
 	raft.mu.Unlock()
 
 	// Send RequestVote RPCs to all other servers concurrently.
-	raft.log("Attempting start election")
+	// we try to avoid any lock during that cycle
+	// so we can process replay as fast as we can.
 
+	raft.log("Attempting start election")
 	for _, peerId := range raft.peers {
 
 		go func(peer uint64) {
@@ -600,11 +630,18 @@ func (raft *RaftProtocol) startElection() {
 					raft.log("received invalid replay from peer %+v , %+T", peer, voteReplay)
 					return
 				}
-				// re-check we are still a candidate node
+				// re-check that we are still a candidate node if not we already lost
 				raft.log("received vote reply from peer %v term %d %+v ",
 					peer, voteReplay.Term, voteReplay.VoteGranted)
 				if raft.isCandidate() == false {
 					raft.log("node was a candidate , state already change. ")
+					return
+				}
+
+				// tie we make our self follower
+				// timer will trigger re-election and introduce jitter, someone will win
+				if voteReplay.Term == math.MaxUint64 && electionTerm == math.MaxUint64 {
+					raft.makeFollower(voteReplay.Term)
 					return
 				}
 
@@ -614,11 +651,12 @@ func (raft *RaftProtocol) startElection() {
 					return
 				}
 
-				// lock and check
+				// lock and check if vote is legit if it legit count
 				updateVotes := raft.gotVote(electionTerm, votesReceived, voteReplay)
 
-				// condition to become a leader. if num peer reduced we don't care because
-				// number of vote >
+				// predicate condition to become a leader.
+				//  note: if number of peer reduced, we don't care because we know cluster size.
+				//        if bunch of node bounced off,  we care about majority.
 				raft.mu.Lock()
 				votesReceived = updateVotes
 				raft.log("collected %d votes", votesReceived)
@@ -686,11 +724,15 @@ func (raft *RaftProtocol) startLeader() {
 
 	raft.makeLeader()
 
+	// here we can  ( optimization ideas )
+	//		a) read from a another channel for event in case we want stop
+	// 		b) notify other sub system that we are leader.
+	//      c) signal to storage subsystem take snapshoot
 	go func() {
 		ticker := time.NewTicker(HEARBEAT_INTERVAL * time.Millisecond)
 		defer ticker.Stop()
 
-		// Send periodic heartbeats, as long as still leader.
+		// Send periodic group broadcast heartbeats, as long we are leader.
 		for {
 			raft.groupBroadcast()
 			<-ticker.C
@@ -704,9 +746,9 @@ func (raft *RaftProtocol) startLeader() {
 }
 
 /*
-	matchIndex is highest log entry know to be replicated
-	and it increase monotonically.
-	Method countMatchIndex log entry id for each peer.
+	matchIndex is highest log entry know to be replicated and it increase monotonically
+	Method countMatchIndex log entry id for each peer ad return count.
+	It doesn't hold a lock,  caller MUST hold a lock
 */
 func (raft *RaftProtocol) countMatchIndex(i uint64) int {
 	count := 0
@@ -735,7 +777,7 @@ func (raft *RaftProtocol) broadcastMsg(peer uint64, myTerm uint64) error {
 	prevLogIndex := nextIndex - 1
 
 	var prevLogTerm uint64 = math.MaxUint64
-	if prevLogIndex >= 0 && prevLogIndex < math.MaxUint64 {
+	if prevLogIndex >= 0 && prevLogIndex < math.MaxUint64 && int(prevLogIndex) < len(raft.stateLog) {
 		prevLogTerm = raft.stateLog[prevLogIndex].Term
 	}
 
@@ -753,18 +795,21 @@ func (raft *RaftProtocol) broadcastMsg(peer uint64, myTerm uint64) error {
 	}
 
 	// send gRPC call and we DON'T hold a lock.
-	raft.log("%v sending append entries -> peer %v: ni=%d, args=%+v", color.Red+myState.String()+color.Reset, peer, 0, appendEntry)
+	raft.log("%v sending append entries -> peer [#%v] ---> [next index=%+v], [leader commit index=%v]",
+		color.Red+myState.String()+color.Reset, peer, appendEntry.PrevLogIndex, appendEntry.LeaderCommit)
+
 	rpcReply, err := raft.server.RemoteCall(peer, appendEntry)
 	if err != nil {
 		glog.Errorf("invalid respond to an rpc call peer "+
-			"%v: nextIndex=%d, log index=%+v,  prev log term = [%v], err=[%+v]", peer, 0, appendEntry.PrevLogIndex, appendEntry.PrevLogTerm, err)
+			"%v: nextIndex=%d, log index=%+v,  prev log term = [%v], err=[%+v]",
+			peer, 0, appendEntry.PrevLogIndex, appendEntry.PrevLogTerm, err)
 		return nil
 	}
 
 	// check rpc in case we got bogus msg
 	replay, ok := rpcReply.(*pb.AppendEntriesReply)
 	if !ok {
-		glog.Errorf("invalid respond type rpc call peer %v: nextIndex=%d, args=%+v", peer, 0, appendEntry)
+		glog.Errorf("invalid respond type rpc call peer [#%v] nextIndex=%d, [leader commit index=%v]", peer, 0, appendEntry.LeaderCommit)
 		return fmt.Errorf("invalid respond to rpc call")
 	}
 

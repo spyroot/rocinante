@@ -6,12 +6,18 @@ import (
 	"sync"
 )
 
+type ValueRespond struct {
+	Val     []byte
+	Success bool
+}
+
 /**
 Generic interface for storage
 */
 type Storage interface {
 	Set(key string, value []byte)
 	Get(key string) ([]byte, bool)
+	GetAsync(key string) <-chan ValueRespond
 	HasKey(key string) bool
 	HasData() bool
 	GetCopy() map[string][]byte
@@ -105,6 +111,26 @@ func (vs *VolatileStorage) Get(key string) ([]byte, bool) {
 	defer vs.mutex.Unlock()
 	v, found := vs.storage[key]
 	return v, found
+}
+
+/**
+
+ */
+func (vs *VolatileStorage) GetAsync(key string) <-chan ValueRespond {
+
+	dst := make(chan ValueRespond, 1)
+
+	vs.mutex.Lock()
+	defer vs.mutex.Unlock()
+	v, found := vs.storage[key]
+
+	dst <- ValueRespond{
+		Val:     v,
+		Success: found,
+	}
+	close(dst)
+
+	return dst
 }
 
 func (vs *VolatileStorage) Set(key string, value []byte) {

@@ -87,7 +87,7 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}, verbose b
 		// final result should:
 		// myNetworkSpec hold server spec
 		// peerSpec hold all other peer spec
-		if CheckSocket(raftBinding) && CheckSocket(restBinding) {
+		if CheckSocket(raftBinding, "tcp") && CheckSocket(restBinding, "tcp") {
 			glog.Infof("Found unused port, server id ", raftBinding)
 			myPort := controllers[i].Port
 			for p := 0; p < len(controllers); p++ {
@@ -143,7 +143,7 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}, verbose b
 		t.Log("all server started.")
 	}
 
-	// return callback to close channel
+	// return callback to close channel and shutdown servers
 	return func(t *testing.T) {
 		if verbose {
 			t.Log("Shutdown.")

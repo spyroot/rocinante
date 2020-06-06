@@ -1,3 +1,9 @@
+/*
+	Raft RaftProtocol volatile state
+	hold commit index and last applied
+
+	Mustafa Bayramov
+*/
 package server
 
 import (

@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/binary"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -107,8 +108,11 @@ type Server struct {
 	// if current server already down , we should reject all calls
 	isDead bool
 
-	// storage
-	db             Storage
+	// first storage store key value commit
+	db Storage
+	// second storage key value mapping to index
+	commitedLog Storage
+
 	commitProducer chan CommitEntry
 
 	// proto buffer
@@ -195,17 +199,22 @@ func (s *Server) ReadCommits() {
 	for {
 		select {
 		case c := <-s.commitProducer:
-
 			msg := color.Green + "received from channel commit index" + color.Reset
 			glog.Infof("%s %d", msg, c.Index, c.Command.Key, c.Command.Value)
 
+			// store and check.
 			s.db.Set(c.Command.Key, c.Command.Value)
+
 			val, ok := s.db.Get(c.Command.Key)
 			if ok == false {
 				log.Fatal("Failed to store val", val)
 			}
 
-			//case <-timeout:
+			buf := make([]byte, 8)
+			binary.LittleEndian.PutUint64(buf, c.Index)
+			s.commitedLog.Set(c.Command.Key, buf)
+
+			// case <-timeout:
 			//	glog.Infof("read from channel timeout.")
 			//	ok = true
 			//}
@@ -229,6 +238,23 @@ func (s *Server) AppendEntriesCall(ctx context.Context, req *pb.AppendEntries) (
 	}
 
 	glog.Infof("[rpc server handler] rx append entries from a leader [%v] term [%v]", req.LeaderId, req.Term)
+
+	d := time.Now().Add(50 * time.Millisecond)
+	ctx, cancel := context.WithDeadline(context.Background(), d)
+
+	// Even though ctx will be expired, it is good practice to call its
+	// cancellation function in any case. Failure to do so may keep the
+	// context and its parent alive longer than necessary.
+	defer cancel()
+
+	select {
+	case <-time.After(1 * time.Second):
+		fmt.Println("overslept")
+	case <-ctx.Done():
+		fmt.Println(ctx.Err())
+	default:
+	}
+
 	rep, err := s.raftState.AppendEntries(req)
 
 	// update last leader seen
@@ -245,30 +271,61 @@ func (s *Server) AppendEntriesCall(ctx context.Context, req *pb.AppendEntries) (
 	return rep, nil
 }
 
-///**
-//
-// */
-//func (s *Server) ReadCommits(ctx context.Context) ([]pb.CommitEntry, error) {
-//
-//	glog.Infof("received read commit request.")
-//	if s == nil {
-//		return nil, fmt.Errorf("server uninitialized")
-//	}
-//
-//	if s.isDead {
-//		return nil, fmt.Errorf("server in shutdown state")
-//	}
-//
-//	if s == nil {
-//		glog.Info("[rpc server handler] server uninitialized.")
-//		return nil, fmt.Errorf("server uninitilized")
-//	}
-//
-//	commits := s.raftState.ReadCommits()
-//	glog.Infof("got respond back, num commits=%d", len(commits))
-//
-//	return commits, nil
-//}
+/**
+return result for get value
+*/
+type GetValueRespond struct {
+	Val     []byte
+	Index   uint64
+	Success bool
+}
+
+/**
+ */
+func (s *Server) GetValue(ctx context.Context, key string) (*GetValueRespond, error) {
+
+	glog.Infof("received read commit request.")
+	if s == nil {
+		return nil, fmt.Errorf("server uninitialized")
+	}
+	if s.isDead {
+		return nil, fmt.Errorf("server in shutdown state")
+	}
+
+	var resp GetValueRespond
+	valOk := false
+	select {
+	case v, _ := <-s.db.GetAsync(key):
+		resp.Val = v.Val
+		valOk = v.Success
+	case <-ctx.Done():
+		return &resp, ctx.Err()
+	}
+
+	indexOk := false
+	select {
+	case index, _ := <-s.commitedLog.GetAsync(key):
+		resp.Index = ReadUint64(index.Val)
+		indexOk = index.Success
+	case <-ctx.Done():
+		return &resp, ctx.Err()
+	}
+
+	if valOk == true && indexOk == true {
+		resp.Success = true
+		return &resp, nil
+	}
+
+	return &resp, nil
+
+	//index := s.commitedLog.GetAsync(key)
+	//
+	//if v. && logOk {
+	//return v, ReadUint64(index), true, nil
+	//if v. && logOk {
+	//return v, ReadUint64(index), true, nil
+
+}
 
 /**
 
@@ -387,7 +444,11 @@ func (s *Server) GetPeerID(bind string) uint64 {
 func NewServer(serverSpec ServerSpec, peers []ServerSpec, port string, ready <-chan interface{}) (*Server, error) {
 
 	s := new(Server)
+	// storage for key value
 	s.db = NewVolatileStorage()
+	// storage that hold key - commit index
+	s.commitedLog = NewVolatileStorage()
+	// server hash
 	s.serverId = hash(serverSpec.RaftNetworkBind)
 	serverSpec.ServerID = s.serverId
 	s.serverBind = serverSpec.RaftNetworkBind
@@ -433,7 +494,7 @@ func NewServer(serverSpec ServerSpec, peers []ServerSpec, port string, ready <-c
 }
 
 /**
-    Start server a new server, upon success method returns a pointer to a server.
+    Start a new server, upon success method returns a pointer to a server.
   - serverSpec must hold local server specs.
   - peers must holds all other peer specs.
   - port is bind address.
@@ -722,6 +783,10 @@ func (s *Server) getPeerSpec(id uint64) (*ServerSpec, error) {
 func (s *Server) PeerStatus() map[uint64]PeerStatus {
 
 	connStatus := make(map[uint64]PeerStatus)
+	if s == nil {
+		return connStatus
+	}
+
 	for k, v := range s.peerClient {
 		peer, err := s.getPeerSpec(k)
 		if err != nil {
