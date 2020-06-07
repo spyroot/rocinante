@@ -14,6 +14,7 @@ import (
 
 	pb "../../api"
 	"../../pkg/color"
+	"../io"
 	"github.com/golang/glog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
@@ -132,6 +133,10 @@ type Server struct {
 
 	commitProducer chan CommitEntry
 
+	// rest ready channel
+	restReady chan bool
+
+	// grpc listnner
 	listener *net.Listener
 
 	// proto buffer
@@ -335,7 +340,7 @@ func (s *Server) GetValue(ctx context.Context, key string) (*GetValueRespond, er
 	indexOk := false
 	select {
 	case index, _ := <-s.committedLog.GetAsync(key):
-		resp.Index = ReadUint64(index.Val)
+		resp.Index = io.ReadUint64(index.Val)
 		indexOk = index.Success
 	case <-ctx.Done():
 		return &resp, ctx.Err()
@@ -479,7 +484,7 @@ func (s *Server) GetPeerID(bind string) uint64 {
   - peers must holds all other peer specs.
   - port is bind address.
 */
-func NewServer(serverSpec ServerSpec, peers []ServerSpec, port string, ready <-chan interface{}) (*Server, error) {
+func NewServer(spec ServerSpec, peers []ServerSpec, port string, ready <-chan interface{}) (*Server, error) {
 
 	s := new(Server)
 	// storage for key value
@@ -487,17 +492,17 @@ func NewServer(serverSpec ServerSpec, peers []ServerSpec, port string, ready <-c
 	// storage that hold key - commit index
 	s.committedLog = NewVolatileStorage()
 	// server hash
-	s.serverId = hash(serverSpec.RaftNetworkBind)
-	serverSpec.ServerID = s.serverId
-	s.serverBind = serverSpec.RaftNetworkBind
-	s.serverSpec = serverSpec
+	s.serverId = hash(spec.RaftNetworkBind)
+	spec.ServerID = s.serverId
+	s.serverBind = spec.RaftNetworkBind
+	s.serverSpec = spec
 	s.serverState = Init
 
 	if len(peers) == 0 {
 		log.Fatal("Error", len(peers))
 	}
 
-	glog.Infof("[rpc server handler] Server %v id %v", serverSpec.RaftNetworkBind, s.serverId)
+	glog.Infof("[rpc server handler] Server %v id %v", spec.RaftNetworkBind, s.serverId)
 
 	s.peersHash = make(map[string]uint64)
 	s.peerClient = make(map[uint64]*grpc.ClientConn)
@@ -524,15 +529,32 @@ func NewServer(serverSpec ServerSpec, peers []ServerSpec, port string, ready <-c
 		return nil, err
 	}
 
-	restReady := make(chan bool)
-	go func() {
-		s.rest, err = NewRestfulServer(s, serverSpec.RestNetworkBind, serverSpec.Basedir, restReady)
-	}()
+	s.restReady = make(chan bool)
+	s.rest, err = NewRestfulServer(s, s.serverSpec.RestNetworkBind, s.serverSpec.Basedir, s.restReady)
+	if err != nil {
+		return nil, err
+	}
 
-	<-restReady
+	if s.rest == nil {
+		return nil, fmt.Errorf("failed to start rest api service")
+	}
+
+	//
 	go s.ReadCommits()
 
 	return s, err
+}
+
+/**
+
+ */
+func (s *Server) StartRest() {
+
+	go func() {
+		s.rest.Serve()
+	}()
+	// wait for server tell it ready
+	<-s.restReady
 }
 
 /**
@@ -673,12 +695,16 @@ func (s *Server) Serve() error {
 			if err := s.rpc.Serve(lis); err != nil {
 				log.Fatalf("[rpc server] failed serve: %v", err)
 			}
+
 			s.listener = &lis
 			s.wait.Done()
 		}()
 	}()
 
 	log.Printf("Server started.")
+
+	s.StartRest()
+
 	<-s.quit
 	s.wait.Wait()
 
@@ -799,25 +825,24 @@ func (s *Server) Shutdown() {
 
 	s.lock.Lock()
 	if s.serverState == Shutdown {
+		glog.Infof("Changed server state to ", s.serverState)
 		s.lock.Unlock()
 		return
 	}
 
 	if s.rest != nil {
 		// shutdown rest
+		glog.Infof("Sending signal to rest server to shutdown. %v", s.serverState)
 		s.rest.shutdownRest()
+		//for released := 0; released <= 1; {
+		//	if io.CheckSocket(s.RESTEndpoint().RestNetworkBind, "tcp") {
+		//			glog.Infof("server released port ", s.ServerBind())
+		//			released++
+		//	}
 	}
 
-	//for released := 0; released <= 1; {
-	//	if CheckSocket(s.RESTEndpoint().RestNetworkBind, "tcp") {
-	//			glog.Infof("server released port ", s.ServerBind())
-	//			released++
-	//	}
-	//}
-
-	s.serverState = Shutdown
 	s.lock.Unlock()
-	glog.Infof("server going to shutdownGrpc state")
+	glog.Infof("server going to shutdown grpc state")
 	// shutdownGrpc raft state
 	s.raftState.Shutdown()
 	// close all peer connection
@@ -834,7 +859,6 @@ func (s *Server) Shutdown() {
 	if s.listener != nil {
 		(*s.listener).Close()
 	}
-
 }
 
 /**

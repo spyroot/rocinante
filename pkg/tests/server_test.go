@@ -22,6 +22,7 @@ import (
 
 	pb "../../api"
 	"../client"
+	"../io"
 	"../server"
 	"google.golang.org/grpc/connectivity"
 )
@@ -1100,7 +1101,7 @@ func TestConnectReconnect(t *testing.T) {
 			// wait for all port to be released
 			for released := 0; released <= len(servers); {
 				for _, s := range servers {
-					if server.CheckSocket(s.ServerBind(), "tcp") {
+					if io.CheckSocket(s.ServerBind(), "tcp") {
 						t.Log("server released port ", s.ServerBind())
 						released++
 					}
@@ -1109,7 +1110,7 @@ func TestConnectReconnect(t *testing.T) {
 
 			for released := 0; released <= len(servers); {
 				for _, s := range servers {
-					if server.CheckSocket(s.RESTEndpoint().RestNetworkBind, "tcp") {
+					if io.CheckSocket(s.RESTEndpoint().RestNetworkBind, "tcp") {
 						t.Log("server released port ", s.ServerBind())
 						released++
 					}

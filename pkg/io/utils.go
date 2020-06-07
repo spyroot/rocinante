@@ -1,9 +1,10 @@
-package server
+package io
 
 import (
 	"bytes"
 	"encoding/binary"
 	"net"
+	"os"
 )
 
 /*
@@ -38,4 +39,21 @@ func ReadUint64(data []byte) (ret uint64) {
 	buf := bytes.NewBuffer(data)
 	binary.Read(buf, binary.LittleEndian, &ret)
 	return
+}
+
+/**
+
+ */
+func IsDir(dir string) (bool, error) {
+
+	//
+	src, err := os.Stat(dir)
+	if err != nil {
+		return false, err
+	}
+	// check if the source is indeed a directory or not
+	if !src.IsDir() {
+		return false, err
+	}
+	return true, nil
 }

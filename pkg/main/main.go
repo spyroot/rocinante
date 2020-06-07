@@ -9,7 +9,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"../color"
 	hs "../hash"
+	"../io"
 	"../server"
 	"../server/artifacts"
 	"github.com/golang/glog"
@@ -53,8 +55,11 @@ func init() {
 Shutdown handler to shutdown server
 */
 func signalHandler(server *server.Server) {
-	log.Println("Cleaning environment")
-	server.Shutdown()
+	msg := color.Red + "shutting down server" + color.Reset
+	glog.Infof(msg)
+	if server != nil {
+		server.Shutdown()
+	}
 }
 
 /**
@@ -106,7 +111,7 @@ func main() {
 			LogDir:          "",
 		}
 
-		if server.CheckSocket(raftBinding, "tcp") && server.CheckSocket(restBinding, "tcp") {
+		if io.CheckSocket(raftBinding, "tcp") && io.CheckSocket(restBinding, "tcp") {
 			glog.Infof("Found unused port, server id %s", raftBinding)
 			myPort = controllers[i].Port
 			for p := 0; p < len(controllers); p++ {
@@ -126,12 +131,14 @@ func main() {
 		}
 	}
 
+	glog.Infof(myNetworkSpec.Basedir)
 	if len(networkSpec) > len(controllers) {
 		log.Fatal("Error number of peer can't > than number of node in cluster.")
+		return
 	}
-
 	if len(raftBinding) == 0 {
-		glog.Fatal("Can't find free port. All port in use. ")
+		glog.Fatal("Can't find free port. All port in use.")
+		return
 	}
 
 	glog.Infof("Starting server on a port [%s]", myPort)
@@ -141,6 +148,10 @@ func main() {
 		glog.Fatal("Failed to start server", err)
 	}
 
+	if localServer == nil {
+		log.Fatal("Failed create a server.")
+		os.Exit(1)
+	}
 	// add signal handler , on stop shutdown
 	signalChannel := make(chan os.Signal)
 	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
@@ -155,5 +166,6 @@ func main() {
 	if err != nil {
 		glog.Error(err)
 	}
+
 	glog.Flush()
 }

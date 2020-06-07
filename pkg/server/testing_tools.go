@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	hs "../hash"
+	"../io"
 	"../server/artifacts"
 	"github.com/golang/glog"
 )
@@ -71,8 +72,8 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}, verbose b
 	for i, controller := range controllers {
 		networkSpec := make([]ServerSpec, 0)
 
-		raftBinding = GenerateId(controllers[i].Address, controller.Port)
-		restBinding = GenerateId(controllers[i].Address, controller.Rest)
+		raftBinding = io.GenerateId(controllers[i].Address, controller.Port)
+		restBinding = io.GenerateId(controllers[i].Address, controller.Rest)
 
 		myNetworkSpec = ServerSpec{
 			ServerID:        hs.Hash64(raftBinding),
@@ -87,13 +88,13 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}, verbose b
 		// final result should:
 		// myNetworkSpec hold server spec
 		// peerSpec hold all other peer spec
-		if CheckSocket(raftBinding, "tcp") && CheckSocket(restBinding, "tcp") {
+		if io.CheckSocket(raftBinding, "tcp") && io.CheckSocket(restBinding, "tcp") {
 			glog.Infof("Found unused port, server id ", raftBinding)
 			myPort := controllers[i].Port
 			for p := 0; p < len(controllers); p++ {
 				if p != i {
-					raftBind := GenerateId(controllers[p].Address, controllers[p].Port)
-					restBind := GenerateId(controllers[p].Address, controllers[p].Rest)
+					raftBind := io.GenerateId(controllers[p].Address, controllers[p].Port)
+					restBind := io.GenerateId(controllers[p].Address, controllers[p].Rest)
 					spec := ServerSpec{
 						RaftNetworkBind: raftBind,
 						RestNetworkBind: restBind,

@@ -1,36 +1,39 @@
 package artifacts
 
 import (
-	"github.com/golang/glog"
-	"gopkg.in/yaml.v2"
+	"fmt"
 	"io/ioutil"
 	"log"
 	"os"
 	"path/filepath"
+
+	"../../io"
+	"github.com/golang/glog"
+	"gopkg.in/yaml.v2"
 )
 
 type Controller struct {
-	Address 	string 				`yaml:"address"`
-	Port        string 				`yaml:"port"`
-	Rest        string 				`yaml:"rest"`
-	WWWRoot     string 				`yaml:"wwwroot"`
+	Address string `yaml:"address"`
+	Port    string `yaml:"port"`
+	Rest    string `yaml:"rest"`
+	WWWRoot string `yaml:"wwwroot"`
 }
 
 type Cluster struct {
-	Name        string       		`yaml:"name"`
-	Controllers []Controller 		`yaml:"controllers"`
+	Name        string       `yaml:"name"`
+	Controllers []Controller `yaml:"controllers"`
 }
 
 type Artifact struct {
 	Formation struct {
-		Cluster           Cluster  	`yaml:"cluster"`
-	}  `yaml:"artifact"`
+		Cluster Cluster `yaml:"cluster"`
+	} `yaml:"artifact"`
 	BaseDir string
 }
 
 /*
    Return true if file exists
- */
+*/
 func fileExists(filename string) bool {
 	stat, err := os.Stat(filename)
 	if os.IsNotExist(err) {
@@ -40,7 +43,7 @@ func fileExists(filename string) bool {
 }
 
 /**
- Reads config.yml file and serialize everything in JetConfig struct.
+  Reads config.yml file and serialize everything in JetConfig struct.
 */
 func Read(file string) (Artifact, error) {
 
@@ -52,7 +55,7 @@ func Read(file string) (Artifact, error) {
 		if err != nil {
 			return artifact, err
 		}
-		glog.Info("Reading config ", pwd + "/" + file)
+		glog.Info("Reading config ", pwd+"/"+file)
 		base = filepath.Join(pwd, file)
 	}
 
@@ -84,8 +87,18 @@ func Read(file string) (Artifact, error) {
 		pwd, _ := os.Getwd()
 		dir, err = filepath.Abs(pwd)
 		artifact.BaseDir = dir
+		glog.Infof("Setting current dir as base %s", artifact.BaseDir)
 	} else {
-		artifact.BaseDir = filepath.Base(file)
+		glog.Infof("setting base dir %s", filepath.Dir(file))
+		artifact.BaseDir = filepath.Dir(file)
+	}
+
+	ok, err := io.IsDir(artifact.BaseDir)
+	if err != nil {
+		return artifact, fmt.Errorf(err.Error())
+	}
+	if ok == false {
+		return artifact, fmt.Errorf("can't determien a base dir")
 	}
 
 	glog.Infof("Base dir [%s]", dir)

@@ -16,6 +16,7 @@ import (
 	"time"
 
 	pb "../../api"
+	"../io"
 	"github.com/golang/glog"
 	"github.com/gorilla/mux"
 )
@@ -41,8 +42,11 @@ type Restful struct {
 	// base dir where all template , logs
 	basedir string
 	// a channel that we wait for shutdownGrpc
-	shutdownRequest  chan bool
+	shutdownRequest chan bool
+	//
 	shutdownReqCount uint32
+	// ready
+	ready chan<- bool
 }
 
 type Peer struct {
@@ -94,11 +98,25 @@ type HttpValueRespond struct {
 /*
 	Router handler for restful API
 */
-func NewRestfulServer(s *Server, bind string, baseDir string, ready chan<- bool) (*Restful, error) {
+func NewRestfulServer(s *Server, bind string, base string, ready chan<- bool) (*Restful, error) {
 
 	r := new(Restful)
 	r.server = s
-	r.basedir = baseDir
+	glog.Infof("Rest server base dir %s", base)
+	r.basedir = base
+
+	ok, err := io.IsDir(base)
+	if err != nil {
+		glog.Errorf("base dir %s is not valid directory", err)
+		close(ready)
+		return nil, err
+	}
+
+	if !ok {
+		glog.Errorf("base dir %s is not valid directory", base)
+		close(ready)
+		return nil, fmt.Errorf("base dir %s is not valid directory", base)
+	}
 
 	// register all end points
 	router := mux.NewRouter().StrictSlash(true)
@@ -120,24 +138,45 @@ func NewRestfulServer(s *Server, bind string, baseDir string, ready chan<- bool)
 		ReadTimeout:  15 * time.Second,
 	}
 
-	// TODO add another channel to wait on ready
-	// specifically if server need time to boot before boot rest interface
+	r.ready = ready
+	//
+	//// TODO add another channel to wait on ready
+	//// specifically if server need time to boot before boot rest interface
+	//done := make(chan bool)
+	//go func() {
+	//	err := r.restServer.ListenAndServe()
+	//	if err != nil {
+	//		glog.Errorf("Listen and serve %v", err)
+	//	}
+	//	done <- true
+	//}()
+	//
+	//ready <- true
+
+	// wait for shutdown
+	//r.WaitShutdown()
+	//	<-done
+
+	return r, nil
+}
+
+func (rest *Restful) Serve() {
+
 	done := make(chan bool)
 	go func() {
-		err := r.restServer.ListenAndServe()
+		err := rest.restServer.ListenAndServe()
 		if err != nil {
 			glog.Errorf("Listen and serve %v", err)
 		}
 		done <- true
 	}()
 
-	ready <- true
+	rest.ready <- true
+	glog.Infof("rest service started. ")
 
 	// wait for shutdown
-	r.WaitShutdown()
+	rest.WaitShutdown()
 	<-done
-
-	return r, nil
 }
 
 /*
@@ -557,13 +596,12 @@ func (rest *Restful) shutdownRest() {
 		return
 	}
 
-	rest.shutdownRequest <- true
-
 	rest.lock.Lock()
 	defer rest.lock.Unlock()
 	if rest == nil {
 		return
 	}
+
 	if !atomic.CompareAndSwapUint32(&rest.shutdownReqCount, 0, 1) {
 		glog.Infof("Shutdown through API call in progress...")
 		return
