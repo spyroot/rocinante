@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -19,6 +20,17 @@ import (
 )
 
 // TODO add to peer list respond with server spec for auto discovery.
+
+type ServiceState int
+
+var ServerDisconnected = errors.New("server disconnected or init")
+
+const (
+	Init ServiceState = iota
+	Running
+	Disconnected
+	Shutdown
+)
 
 /**
 Server spec describe all api binding points
@@ -42,12 +54,16 @@ type ServerSpec struct {
 	API endpoint for clients
 */
 type ApiEndpoints struct {
+	// raft api end point  ip:port
 	RaftNetworkBind string
+	// rest api end point ip:port
 	RestNetworkBind string
+	// grpc client side end point ip:port
 	GrpcNetworkBind string
 }
 
 type PeerStatus struct {
+	// api endpoint
 	Endpoints ApiEndpoints
 	// connectivity state based on grpc  idle, connected, ready etc
 	State connectivity.State
@@ -61,14 +77,15 @@ type Server struct {
 	// server lock, user to provide sync primitive for all internal go routine
 	//
 	lock sync.Mutex
-
+	//
+	serverState ServiceState
 	// server port
 	port string
 	// 64 bit hash for server id.  is generate based on ip:port
 	serverId uint64
 	// string to hold original bind ip:port
 	serverBind string
-	//
+	// last leader id seen
 	LastLeaderId uint64
 	// last update hold a last rpc message received
 	LastUpdate time.Time
@@ -81,7 +98,7 @@ type Server struct {
 	rest *Restful
 	// a GRPC interface by raft protocol and clients
 	rpc *grpc.Server
-	// a shutdown channel wait for signal, closing this channel will shutdown server
+	// a shutdownGrpc channel wait for signal, closing this channel will shutdownGrpc server
 	quit chan interface{}
 	// a ready channel,  server initially take time to do initial setup,  a main
 	// routine signal a ready signal for raft protocol to beging a state machine.
@@ -106,14 +123,16 @@ type Server struct {
 	serverSpec ServerSpec
 
 	// if current server already down , we should reject all calls
-	isDead bool
+	//isDead bool
 
 	// first storage store key value commit
 	db Storage
 	// second storage key value mapping to index
-	commitedLog Storage
+	committedLog Storage
 
 	commitProducer chan CommitEntry
+
+	listener *net.Listener
 
 	// proto buffer
 	pb.UnimplementedRaftServer
@@ -135,8 +154,12 @@ func (s *Server) RequestVoteCall(ctx context.Context, vote *pb.RequestVote) (*pb
 		return nil, fmt.Errorf("server uninitilized and got vote for %d", vote.CandidateId)
 	}
 
-	if s.isDead {
-		return nil, fmt.Errorf("server in shutdown state")
+	if s.serverState == Shutdown {
+		return nil, fmt.Errorf("server in shutdownGrpc state")
+	}
+
+	if s.serverState == Init || s.serverState == Disconnected {
+		return nil, fmt.Errorf("server in init or disconnected")
 	}
 
 	glog.Infof("[rpc server handler] rx vote for a candidate %v", vote.CandidateId)
@@ -212,7 +235,7 @@ func (s *Server) ReadCommits() {
 
 			buf := make([]byte, 8)
 			binary.LittleEndian.PutUint64(buf, c.Index)
-			s.commitedLog.Set(c.Command.Key, buf)
+			s.committedLog.Set(c.Command.Key, buf)
 
 			// case <-timeout:
 			//	glog.Infof("read from channel timeout.")
@@ -233,8 +256,12 @@ func (s *Server) AppendEntriesCall(ctx context.Context, req *pb.AppendEntries) (
 		return nil, fmt.Errorf("server uninitilized")
 	}
 
-	if s.isDead {
-		return nil, fmt.Errorf("server in shutdown state")
+	if s.serverState == Shutdown {
+		return nil, fmt.Errorf("server in shutdownGrpc state")
+	}
+
+	if s.serverState == Init || s.serverState == Disconnected {
+		return nil, fmt.Errorf("server in init or disconnected")
 	}
 
 	glog.Infof("[rpc server handler] rx append entries from a leader [%v] term [%v]", req.LeaderId, req.Term)
@@ -288,8 +315,11 @@ func (s *Server) GetValue(ctx context.Context, key string) (*GetValueRespond, er
 	if s == nil {
 		return nil, fmt.Errorf("server uninitialized")
 	}
-	if s.isDead {
-		return nil, fmt.Errorf("server in shutdown state")
+	if s.serverState == Shutdown {
+		return nil, fmt.Errorf("server in shutdownGrpc state")
+	}
+	if s.serverState == Init || s.serverState == Disconnected {
+		return nil, fmt.Errorf("server in init or disconnected")
 	}
 
 	var resp GetValueRespond
@@ -304,7 +334,7 @@ func (s *Server) GetValue(ctx context.Context, key string) (*GetValueRespond, er
 
 	indexOk := false
 	select {
-	case index, _ := <-s.commitedLog.GetAsync(key):
+	case index, _ := <-s.committedLog.GetAsync(key):
 		resp.Index = ReadUint64(index.Val)
 		indexOk = index.Success
 	case <-ctx.Done():
@@ -318,7 +348,7 @@ func (s *Server) GetValue(ctx context.Context, key string) (*GetValueRespond, er
 
 	return &resp, nil
 
-	//index := s.commitedLog.GetAsync(key)
+	//index := s.committedLog.GetAsync(key)
 	//
 	//if v. && logOk {
 	//return v, ReadUint64(index), true, nil
@@ -336,8 +366,12 @@ func (s *Server) SubmitCall(ctx context.Context, req *pb.SubmitEntry) (*pb.Submi
 		return nil, fmt.Errorf("server uninitialized")
 	}
 
-	if s.isDead {
-		return nil, fmt.Errorf("server in shutdown state")
+	if s.serverState == Shutdown {
+		return nil, fmt.Errorf("server in shutdownGrpc state")
+	}
+
+	if s.serverState == Init || s.serverState == Disconnected {
+		return nil, fmt.Errorf("server in init or disconnected")
 	}
 
 	if s == nil {
@@ -377,8 +411,12 @@ func (s *Server) Ping(ctx context.Context, in *pb.PingMessage) (*pb.PongReply, e
 		return nil, fmt.Errorf("server uninitialized")
 	}
 
-	if s.isDead {
-		return nil, fmt.Errorf("server in shutdown state")
+	if s.serverState == Shutdown {
+		return nil, fmt.Errorf("server in shutdownGrpc state")
+	}
+
+	if s.serverState == Init || s.serverState == Disconnected {
+		return nil, fmt.Errorf("server in init or disconnected")
 	}
 
 	log.Printf("Receive message %s", in.GetName())
@@ -447,13 +485,13 @@ func NewServer(serverSpec ServerSpec, peers []ServerSpec, port string, ready <-c
 	// storage for key value
 	s.db = NewVolatileStorage()
 	// storage that hold key - commit index
-	s.commitedLog = NewVolatileStorage()
+	s.committedLog = NewVolatileStorage()
 	// server hash
 	s.serverId = hash(serverSpec.RaftNetworkBind)
 	serverSpec.ServerID = s.serverId
 	s.serverBind = serverSpec.RaftNetworkBind
 	s.serverSpec = serverSpec
-	s.isDead = false
+	s.serverState = Init
 
 	if len(peers) == 0 {
 		log.Fatal("Error", len(peers))
@@ -486,8 +524,12 @@ func NewServer(serverSpec ServerSpec, peers []ServerSpec, port string, ready <-c
 		return nil, err
 	}
 
-	s.rest, err = NewRestfulServer(s, serverSpec.RestNetworkBind, serverSpec.Basedir)
+	restReady := make(chan bool)
+	go func() {
+		s.rest, err = NewRestfulServer(s, serverSpec.RestNetworkBind, serverSpec.Basedir, restReady)
+	}()
 
+	<-restReady
 	go s.ReadCommits()
 
 	return s, err
@@ -504,7 +546,7 @@ func (s *Server) Start() error {
 	s.lock.Lock()
 	defer s.lock.Unlock()
 	// if not dead nothing to do
-	if !s.isDead {
+	if s.serverState == Running {
 		return nil
 	}
 
@@ -525,12 +567,11 @@ func (s *Server) Start() error {
 	var entries []CommitEntry
 
 	for c := range commitChans {
-		//		pong(raft.commitChan, pongs)
 		entries = append(entries, c)
 	}
 
 	//	s.rest, err = NewRestfulServer(s, s.serverSpec.RestNetworkBind, serverSpec.Basedir)
-	s.isDead = false
+	s.serverState = Running
 
 	// close ready channel and signal to raft to start fsm
 	// restart all rpc service and signal to raft
@@ -540,7 +581,6 @@ func (s *Server) Start() error {
 	}
 
 	close(ready)
-
 	return nil
 }
 
@@ -554,8 +594,8 @@ func (s *Server) createListener() (net.Listener, error) {
 		return nil, fmt.Errorf("server uninitialized")
 	}
 
-	if s.isDead {
-		return nil, fmt.Errorf("server in shutdown state")
+	if s.serverState == Shutdown || s.serverState == Disconnected {
+		return nil, fmt.Errorf("server in init or disconnected")
 	}
 
 	s.lock.Lock()
@@ -576,7 +616,7 @@ func (s *Server) createListener() (net.Listener, error) {
   Each connection in a separate go routine and each connection added to peer list.
 
   Method create GRPC listener and bind to protobuf to it
-  At the method will block and wait for a signal to shutdown.
+  At the method will block and wait for a signal to shutdownGrpc.
 */
 func (s *Server) Serve() error {
 
@@ -584,8 +624,12 @@ func (s *Server) Serve() error {
 		return fmt.Errorf("server uninitialized")
 	}
 
-	if s.isDead {
-		return fmt.Errorf("server in shutdown state")
+	if s.serverState == Shutdown {
+		return fmt.Errorf("server in shutdownGrpc state")
+	}
+
+	if s.serverState == Running || s.serverState == Disconnected {
+		return fmt.Errorf("server in init or disconnected")
 	}
 
 	lis, err := s.createListener()
@@ -602,6 +646,10 @@ func (s *Server) Serve() error {
 		for _, peerId := range s.peerSpec {
 			// open connection to each peer in separate thread and block
 			go func(p ServerSpec) {
+				// if already open
+				if c, ok := s.peerClient[hash(p.RaftNetworkBind)]; ok {
+					_ = c.Close()
+				}
 				glog.Infof("Attempting connect to a peer %v", p.RaftNetworkBind)
 				conn, err := grpc.Dial(p.RaftNetworkBind, grpc.WithInsecure(), grpc.WithBlock())
 				if err != nil {
@@ -617,12 +665,15 @@ func (s *Server) Serve() error {
 			}(peerId)
 		}
 
+		s.serverState = Running
+
 		// server added to wait group
 		s.wait.Add(1)
 		go func() {
 			if err := s.rpc.Serve(lis); err != nil {
 				log.Fatalf("[rpc server] failed serve: %v", err)
 			}
+			s.listener = &lis
 			s.wait.Done()
 		}()
 	}()
@@ -632,6 +683,7 @@ func (s *Server) Serve() error {
 	s.wait.Wait()
 
 	log.Printf("Shutdown")
+	lis.Close()
 
 	return nil
 }
@@ -645,7 +697,7 @@ func (s *Server) getPeer(peerID uint64) (*grpc.ClientConn, bool) {
 		return nil, false
 	}
 
-	if s.isDead {
+	if s.serverState == Shutdown || s.serverState == Init {
 		return nil, false
 	}
 
@@ -668,8 +720,11 @@ func (s *Server) RemoteCall(peerID uint64, args interface{}) (interface{}, error
 		return nil, fmt.Errorf("server uninitialized")
 	}
 
-	if s.isDead {
-		return nil, fmt.Errorf("server in shutdown state")
+	if s.serverState == Shutdown {
+		return nil, fmt.Errorf("server in shutdownGrpc state")
+	}
+	if s.serverState == Init || s.serverState == Disconnected {
+		return nil, ServerDisconnected
 	}
 
 	if peer, ok := s.getPeer(peerID); ok {
@@ -716,7 +771,7 @@ func (s *Server) RemoteCall(peerID uint64, args interface{}) (interface{}, error
 			glog.Errorf("unknown message %T", args)
 		}
 	} else {
-		glog.Errorf("Peer %d not found", peerID)
+		glog.Errorf(" Peer %d not found, probably disconnected.", peerID)
 	}
 
 	return nil, fmt.Errorf("connect to %d peer closed", peerID)
@@ -734,7 +789,7 @@ func (s *Server) RESTEndpoint() ServerSpec {
 
 /*
    Shutdown a server and gracefully signal to RAFT protocol
-   to shutdown
+   to shutdownGrpc
 */
 func (s *Server) Shutdown() {
 
@@ -743,17 +798,43 @@ func (s *Server) Shutdown() {
 	}
 
 	s.lock.Lock()
-	if s.isDead {
+	if s.serverState == Shutdown {
 		s.lock.Unlock()
 		return
 	}
 
-	s.isDead = true
+	if s.rest != nil {
+		// shutdown rest
+		s.rest.shutdownRest()
+	}
+
+	//for released := 0; released <= 1; {
+	//	if CheckSocket(s.RESTEndpoint().RestNetworkBind, "tcp") {
+	//			glog.Infof("server released port ", s.ServerBind())
+	//			released++
+	//	}
+	//}
+
+	s.serverState = Shutdown
 	s.lock.Unlock()
-	glog.Infof("server going to shutdown state")
+	glog.Infof("server going to shutdownGrpc state")
+	// shutdownGrpc raft state
 	s.raftState.Shutdown()
-	s.rpc.Stop()
+	// close all peer connection
+	glog.Infof("closing all peer connections")
+	for _, p := range s.peerClient {
+		_ = p.Close()
+	}
+	s.peerClient = make(map[uint64]*grpc.ClientConn)
+
+	// stop grpc server
+	s.rpc.GracefulStop()
+	// close quit channel
 	close(s.quit)
+	if s.listener != nil {
+		(*s.listener).Close()
+	}
+
 }
 
 /**
@@ -774,6 +855,13 @@ func (s *Server) getPeerSpec(id uint64) (*ServerSpec, error) {
 		}
 	}
 	return nil, fmt.Errorf("peer not found")
+}
+
+/**
+Return server tcp bind
+*/
+func (s *Server) ServerBind() string {
+	return s.serverBind
 }
 
 /**
@@ -813,4 +901,117 @@ func (s *Server) PeerStatus() map[uint64]PeerStatus {
 	}
 
 	return connStatus
+}
+
+/*
+   Disconnect from all peers,
+   during disconnected state, server will not accept incoming
+   request.
+*/
+func (s *Server) Disconnect() {
+
+	if s == nil {
+		return
+	}
+
+	s.lock.Lock()
+	defer s.lock.Unlock()
+	if s.serverState == Running {
+		s.serverState = Disconnected
+		glog.Infof("server disconnected")
+		// close all peer connection
+		for i, _ := range s.peerClient {
+			_ = s.peerClient[i].Close()
+			//ctx, cancel := context.WithTimeout(context.Background(), 50 * time.Millisecond)
+			//shutdownCh := connectionOnState(ctx, s.peerClient[i], connectivity.Shutdown)
+			//<-shutdownCh
+			//cancel()
+		}
+
+		s.peerClient = make(map[uint64]*grpc.ClientConn)
+	}
+}
+
+/**
+
+ */
+func (s *Server) Reconnect() {
+
+	var wait sync.WaitGroup
+	for _, peerId := range s.peerSpec {
+
+		wait.Add(1)
+		// open connection to each peer in separate thread and block
+		go func(p ServerSpec) {
+			defer wait.Done()
+
+			glog.Infof("Attempting connect to a peer %v", p.RaftNetworkBind)
+			conn, err := grpc.Dial(p.RaftNetworkBind, grpc.WithInsecure(), grpc.WithBlock())
+			if err != nil {
+				glog.Fatalf("failed to connect to a peer: %v", err)
+			}
+			glog.Infof("Connected to %v", p.RaftNetworkBind)
+
+			// add to map all connection handlers to server
+			s.lock.Lock()
+			s.peerClient[hash(p.RaftNetworkBind)] = conn
+			s.lock.Unlock()
+
+		}(peerId)
+	}
+
+	wait.Wait()
+	s.serverState = Running
+}
+
+// return server id, term id, and leader or not
+func (s *Server) IsLeader() (uint64, uint64, bool) {
+	return s.raftState.Status()
+}
+
+// return true if current status running or not
+func (s *Server) IsRunning() bool {
+	return s.serverState == Running
+}
+
+// return true if disconnected or not
+func (s *Server) IsDisconnected() bool {
+	return s.serverState == Disconnected
+}
+
+func (s *Server) IsShutdown() bool {
+	return s.serverState == Shutdown
+}
+
+/**
+Sets connection status for GRPC peer,
+we can use it to set explicitly status
+*/
+func connectionOnState(ctx context.Context, conn *grpc.ClientConn, states ...connectivity.State) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		// continue checking for state change
+		// until one of break states is found
+		for {
+			change := conn.WaitForStateChange(ctx, conn.GetState())
+			if !change {
+				// ctx is done, return
+				// something upstream is cancelling
+				return
+			}
+
+			currentState := conn.GetState()
+
+			for _, s := range states {
+				if currentState == s {
+					// matches one of the states passed
+					// return, closing the done channel
+					return
+				}
+			}
+		}
+	}()
+
+	return done
 }

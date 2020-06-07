@@ -6,6 +6,8 @@ import (
 	"log"
 	"net"
 	"os"
+	"os/signal"
+	"syscall"
 
 	hs "../hash"
 	"../server"
@@ -47,8 +49,20 @@ func init() {
 	flag.Parse()
 }
 
+/**
+Shutdown handler to shutdown server
+*/
+func signalHandler(server *server.Server) {
+	log.Println("Cleaning environment")
+	server.Shutdown()
+}
+
+/**
+
+ */
 func main() {
 
+	// default file
 	var configFile = "config.yaml"
 
 	if len(os.Args) > 1 {
@@ -122,13 +136,22 @@ func main() {
 
 	glog.Infof("Starting server on a port [%s]", myPort)
 	ready := make(chan interface{})
-	ns, err := server.NewServer(myNetworkSpec, networkSpec, myPort, ready)
+	localServer, err := server.NewServer(myNetworkSpec, networkSpec, myPort, ready)
 	if err != nil {
 		glog.Fatal("Failed to start server", err)
 	}
 
+	// add signal handler , on stop shutdown
+	signalChannel := make(chan os.Signal)
+	signal.Notify(signalChannel, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-signalChannel
+		signalHandler(localServer)
+		os.Exit(1)
+	}()
+
 	close(ready)
-	err = ns.Serve()
+	err = localServer.Serve()
 	if err != nil {
 		glog.Error(err)
 	}

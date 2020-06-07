@@ -7,6 +7,7 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"math/rand"
@@ -163,7 +164,7 @@ func (raft *RaftProtocol) RequestVote(vote *pb.RequestVote) (RequestVoteReply, e
 	}
 
 	if raft.isDead() {
-		return reply, fmt.Errorf("servever state is shutdown")
+		return reply, fmt.Errorf("servever state is shutdownGrpc")
 	}
 
 	raft.mu.Lock()
@@ -483,7 +484,7 @@ func (raft *RaftProtocol) isElectionReset(duration time.Duration) bool {
 	defer raft.mu.Unlock()
 	if elapsed := time.Since(raft.electionResetEvent); elapsed >= duration {
 		delta := elapsed - duration
-		raft.log("election expired -> my state %s delta %v", raft.state, delta.Seconds())
+		raft.log("election expired -> my state %s delta %v", color.Blue+raft.state.String()+color.Reset, delta.Seconds())
 		return true
 	}
 	return false
@@ -613,7 +614,10 @@ func (raft *RaftProtocol) startElection() {
 
 	raft.log("Attempting start election")
 	for _, peerId := range raft.peers {
-
+		// if raft disconnected do nothing
+		if raft.server.IsDisconnected() {
+			return
+		}
 		go func(peer uint64) {
 			savedLastLogIndex, savedLastLogTerm := raft.lastLogIndexAndTerm()
 			args := &pb.RequestVote{
@@ -799,6 +803,10 @@ func (raft *RaftProtocol) broadcastMsg(peer uint64, myTerm uint64) error {
 		color.Red+myState.String()+color.Reset, peer, appendEntry.PrevLogIndex, appendEntry.LeaderCommit)
 
 	rpcReply, err := raft.server.RemoteCall(peer, appendEntry)
+	if errors.Is(err, ServerDisconnected) {
+		glog.Info(err)
+		return nil
+	}
 	if err != nil {
 		glog.Errorf("invalid respond to an rpc call peer "+
 			"%v: nextIndex=%d, log index=%+v,  prev log term = [%v], err=[%+v]",
@@ -871,14 +879,20 @@ func (raft *RaftProtocol) groupBroadcast() {
 	currentTerm := raft.readCurrentTerm()
 	for _, peerId := range raft.peers {
 		go func(peer uint64) {
+			if raft.server.IsDisconnected() {
+				return
+			}
 			_ = raft.broadcastMsg(peer, currentTerm)
 		}(peerId)
 	}
 }
 
 /**
- *  Returns a status of current node
- */
+ *  Returns a status of current node.
+	id of server
+    current term of server
+    leader or not
+*/
 func (raft *RaftProtocol) Status() (id uint64, term uint64, isLeader bool) {
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
@@ -887,6 +901,7 @@ func (raft *RaftProtocol) Status() (id uint64, term uint64, isLeader bool) {
 
 /**
 Dumps entire log, it mainly for debug purpose.
+A log is pb.LogEntry
 */
 func (raft *RaftProtocol) getLog() []*pb.LogEntry {
 	raft.mu.Lock()
@@ -921,7 +936,7 @@ func (raft *RaftProtocol) Shutdown() {
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
 	raft.state = Dead
-	raft.log("Server shutdown.")
+	raft.log("Server shutdownGrpc.")
 	close(raft.commitReadyChan)
 }
 

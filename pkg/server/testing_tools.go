@@ -121,17 +121,19 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}, verbose b
 				if verbose {
 					t.Log("Added server to a list", len(servers))
 				}
-
 				wg.Done()
 				lck.Unlock()
 
+				// signal to start a server
 				close(ready)
 				err = srv.Serve()
 				if err != nil {
 					glog.Error(err)
+					return
 				}
-
 			}(myNetworkSpec, networkSpec, myPort)
+		} else {
+			t.Log("can't bind server check if ports are  in use", raftBinding)
 		}
 		if verbose {
 			t.Log("server started.")
@@ -143,7 +145,7 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}, verbose b
 		t.Log("all server started.")
 	}
 
-	// return callback to close channel and shutdown servers
+	// return callback to close channel and shutdownGrpc servers
 	return func(t *testing.T) {
 		if verbose {
 			t.Log("Shutdown.")

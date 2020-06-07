@@ -23,6 +23,7 @@ import (
 	pb "../../api"
 	"../client"
 	"../server"
+	"google.golang.org/grpc/connectivity"
 )
 
 var seqMutex sync.Mutex
@@ -38,7 +39,7 @@ func seq() func() {
 const DefaultConfig string = "/Users/spyroot/go/src/github.com/spyroot/rocinante/config.yaml"
 
 // enable verbose log output.  might be very chatty
-const TestVerbose bool = false
+const testVerbose bool = false
 
 //	mainly to make glog happy
 func usage() {}
@@ -65,7 +66,7 @@ func TestLeaderElection(t *testing.T) {
 	}{
 		{ // test
 			name:    "basic leader election",
-			timeout: 1 * time.Second, // two second
+			timeout: 2 * time.Second, // two second
 			repeat:  10,
 			wantErr: true,
 		},
@@ -73,7 +74,7 @@ func TestLeaderElection(t *testing.T) {
 
 	// channel waiting signal to shutdown
 	quit := make(chan interface{})
-	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, TestVerbose)
+	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, testVerbose)
 	if err != nil {
 		t.Fatal("NewServer() error during setup", err)
 	}
@@ -81,7 +82,7 @@ func TestLeaderElection(t *testing.T) {
 	if len(servers) == 0 {
 		t.Errorf("zero server runing")
 	}
-	if TestVerbose {
+	if testVerbose {
 		t.Log("Number of servers", len(servers))
 	}
 
@@ -100,11 +101,11 @@ func TestLeaderElection(t *testing.T) {
 				<-ticker.C
 				for _, s := range servers {
 					leaderId, _, isLeader := s.RaftState().Status()
-					if TestVerbose {
+					if testVerbose {
 						t.Log("node stats", leaderId, isLeader)
 					}
 					if isLeader == true {
-						if TestVerbose {
+						if testVerbose {
 							t.Log("leader elected", s.LeaderId)
 						}
 						currentLeader = leaderId
@@ -151,7 +152,7 @@ func TestLeaderElection(t *testing.T) {
 	// wait all test to finish
 	<-quit
 
-	if TestVerbose {
+	if testVerbose {
 		t.Log("Shutdown all servers.")
 	}
 
@@ -189,13 +190,13 @@ func TestLeaderElection2(t *testing.T) {
 
 	// channel waiting signal to shutdown
 	quit := make(chan interface{})
-	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, TestVerbose)
+	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, testVerbose)
 	if err != nil {
 		t.Fatal("NewServer() error during setup", err)
 	}
 
 	time.Sleep(2 * time.Second)
-	if TestVerbose {
+	if testVerbose {
 		t.Log("Number of servers", len(servers))
 	}
 
@@ -215,11 +216,11 @@ func TestLeaderElection2(t *testing.T) {
 				<-ticker.C
 				for _, s := range servers {
 					leaderId, _, isLeader := s.RaftState().Status()
-					if TestVerbose {
+					if testVerbose {
 						t.Log("node stats", leaderId, isLeader)
 					}
 					if isLeader == true {
-						if TestVerbose {
+						if testVerbose {
 							t.Log("leader elected", leaderId)
 						}
 						currentLeader = leaderId
@@ -279,7 +280,7 @@ func TestLeaderElection2(t *testing.T) {
 				for _, s := range servers {
 					leaderId, _, isLeader := s.RaftState().Status()
 					if isLeader == true {
-						if TestVerbose {
+						if testVerbose {
 							t.Log("new leader elected", leaderId, oldLeader)
 						}
 						currentLeader = leaderId
@@ -313,7 +314,6 @@ func TestLeaderElection2(t *testing.T) {
 }
 
 /**
-
     Test start 3 server,
 	- Fail one and check re-election,
 	- Re-add server back
@@ -341,7 +341,7 @@ func TestLeaderStartStop(t *testing.T) {
 
 	time.Sleep(2 * time.Second)
 	quit := make(chan interface{})
-	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, TestVerbose)
+	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, testVerbose)
 	if err != nil {
 		t.Errorf("NewServer() error during setup %v", err)
 	}
@@ -353,8 +353,6 @@ func TestLeaderStartStop(t *testing.T) {
 	// execute tests
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-
-			defer seq()()
 
 			var converged = false
 			var currentLeader uint64 = 0
@@ -404,7 +402,7 @@ func TestLeaderStartStop(t *testing.T) {
 				t.Errorf("expected single leader in the cluster")
 			}
 
-			/************* re-election   **************/
+			/************* find a leader and shutdown  **************/
 			for _, s := range servers {
 				_, _, isLeader := s.RaftState().Status()
 				// shutdown.
@@ -487,9 +485,9 @@ func TestLeaderStartStop(t *testing.T) {
 
 	t.Log("Shutdown all servers.")
 	// shutdown all
-	//for _, s := range servers {
-	//	s.Shutdown()
-	//}
+	for _, s := range servers {
+		s.Shutdown()
+	}
 	t.Log("Done.")
 }
 
@@ -577,7 +575,7 @@ func TestSubmit(t *testing.T) {
 	if err != nil {
 		t.Fatal("NewServer() error during setup", err)
 	}
-	if TestVerbose {
+	if testVerbose {
 		t.Log("Number of servers", len(servers))
 	}
 
@@ -586,12 +584,12 @@ func TestSubmit(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			defer seq()()
 
-			b, _ := checkLeader(t, tt.repeat, tt.timeout, servers, TestVerbose)
+			b, _ := checkLeader(t, tt.repeat, tt.timeout, servers, testVerbose)
 			if !b {
 				t.Error("failed select a leader.")
 			}
 
-			leader := getLeader(t, tt.repeat, tt.timeout, servers, TestVerbose)
+			leader := getLeader(t, tt.repeat, tt.timeout, servers, testVerbose)
 			apiEndpoint := leader.RESTEndpoint()
 
 			apiClient, err := client.NewRestClientFromUrl(apiEndpoint.RestNetworkBind)
@@ -600,7 +598,7 @@ func TestSubmit(t *testing.T) {
 				return
 			}
 
-			ok, err := storeAndCheck(t, apiClient, "test", "test123", 2000, TestVerbose)
+			ok, err := storeAndCheck(t, apiClient, "test", "test123", 2000, testVerbose)
 			if err != nil {
 				t.Error("failed test ", err)
 			}
@@ -628,7 +626,7 @@ func TestSubmit(t *testing.T) {
 	// wait all test to finish
 	<-quit
 
-	if TestVerbose {
+	if testVerbose {
 		t.Log("Shutdown all servers.")
 	}
 
@@ -700,7 +698,7 @@ func TestSubmit2(t *testing.T) {
 	if err != nil {
 		t.Fatal("NewServer() error during setup", err)
 	}
-	if TestVerbose {
+	if testVerbose {
 		t.Log("Number of servers", len(servers))
 	}
 
@@ -712,12 +710,12 @@ func TestSubmit2(t *testing.T) {
 
 			rand.Seed(time.Now().UnixNano())
 
-			b, _ := checkLeader(t, tt.repeat, tt.timeout, servers, TestVerbose)
+			b, _ := checkLeader(t, tt.repeat, tt.timeout, servers, testVerbose)
 			if !b {
 				t.Error("failed select a leader.")
 			}
 
-			leader := getLeader(t, tt.repeat, tt.timeout, servers, TestVerbose)
+			leader := getLeader(t, tt.repeat, tt.timeout, servers, testVerbose)
 			apiEndpoint := leader.RESTEndpoint()
 
 			apiClient, err := client.NewRestClientFromUrl(apiEndpoint.RestNetworkBind)
@@ -734,7 +732,7 @@ func TestSubmit2(t *testing.T) {
 				generatedKVs = append(generatedKVs, key)
 
 				if !tt.batch {
-					ok, err := storeAndCheck(t, apiClient, key, val, tt.wait, TestVerbose)
+					ok, err := storeAndCheck(t, apiClient, key, val, tt.wait, testVerbose)
 					if err != nil {
 						t.Error("failed test ", err)
 					}
@@ -742,7 +740,7 @@ func TestSubmit2(t *testing.T) {
 						t.Error("failed fetch value ")
 					}
 				} else {
-					ok, err := batchStore(t, apiClient, key, val, tt.wait, TestVerbose)
+					ok, err := batchStore(t, apiClient, key, val, tt.wait, testVerbose)
 					if err != nil {
 						t.Error("failed test ", err)
 					}
@@ -811,7 +809,7 @@ func TestSubmit2(t *testing.T) {
 	// wait all test to finish
 	<-quit
 
-	if TestVerbose {
+	if testVerbose {
 		t.Log("Shutdown all servers.")
 	}
 
@@ -887,7 +885,7 @@ func TestSimpleAsyncGet(t *testing.T) {
 	if err != nil {
 		t.Fatal("NewServer() error during setup", err)
 	}
-	if TestVerbose {
+	if testVerbose {
 		t.Log("Number of servers", len(servers))
 	}
 
@@ -899,12 +897,12 @@ func TestSimpleAsyncGet(t *testing.T) {
 
 			rand.Seed(time.Now().UnixNano())
 
-			b, _ := checkLeader(t, tt.repeat, tt.timeout, servers, TestVerbose)
+			b, _ := checkLeader(t, tt.repeat, tt.timeout, servers, testVerbose)
 			if !b {
 				t.Error("failed select a leader.")
 			}
 
-			leader := getLeader(t, tt.repeat, tt.timeout, servers, TestVerbose)
+			leader := getLeader(t, tt.repeat, tt.timeout, servers, testVerbose)
 			apiEndpoint := leader.RESTEndpoint()
 
 			apiClient, err := client.NewRestClientFromUrl(apiEndpoint.RestNetworkBind)
@@ -917,7 +915,7 @@ func TestSimpleAsyncGet(t *testing.T) {
 				key := randSeq(12)
 				val := randSeq(12)
 				generatedKVs = append(generatedKVs, key)
-				ok, err := batchStore(t, apiClient, key, val, tt.wait, TestVerbose)
+				ok, err := batchStore(t, apiClient, key, val, tt.wait, testVerbose)
 				if err != nil {
 					t.Error("failed test", err)
 				}
@@ -973,7 +971,7 @@ func TestSimpleAsyncGet(t *testing.T) {
 	// wait all test to finish
 	<-quit
 
-	if TestVerbose {
+	if testVerbose {
 		t.Log("Shutdown all servers.")
 	}
 
@@ -986,7 +984,258 @@ func TestSimpleAsyncGet(t *testing.T) {
 }
 
 /**
-Should return a cluster leader after all node converge
+    Test start 3 server,  fail one and check re-election , re-add back
+	Note if run all test at same time,  TCP stack need release all ports.
+*/
+func TestConnectReconnect(t *testing.T) {
+
+	tests := []struct {
+		name       string
+		timeout    time.Duration // second, ms etc
+		repeat     int           // how many time repeat
+		records    int
+		waitLeader time.Duration // wait for leader initial timer
+		reconnect  bool          // reconnect back a node we disconnected
+	}{
+		{ // test
+			name:       "DisconnectConnectBack1",
+			timeout:    1 * time.Second, // time to wait cluster to converge
+			repeat:     10,              // converged for get value
+			waitLeader: 2,               // wait for leader initial timer
+			reconnect:  false,
+		},
+		{ // test
+			name:       "DisconnectConnectBack2",
+			timeout:    1 * time.Second, // time to wait cluster to converge
+			repeat:     10,              // converged for get value
+			waitLeader: 2,               // wait for leader initial timer
+			reconnect:  true,
+		},
+	}
+
+	var quit chan interface{}
+	var wait sync.WaitGroup
+
+	// execute tests
+	for _, tt := range tests {
+		wait.Add(1)
+		quit = make(chan interface{})
+
+		t.Run(tt.name, func(t *testing.T) {
+			defer wait.Done()
+			teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, true)
+			if err != nil {
+				t.Errorf("NewServer() error during setup %v", err)
+				return
+			}
+			if len(servers) < 1 {
+				t.Errorf("number of server is less than one, check for port conflict.")
+				return
+			}
+			if testVerbose {
+				t.Log("Number of servers running", len(servers))
+			}
+			defer teardownTestCase(t)
+
+			rand.Seed(time.Now().UnixNano())
+			time.Sleep(tt.waitLeader * time.Second)
+			b, _ := checkLeader(t, tt.repeat, tt.timeout, servers, testVerbose)
+			if !b {
+				t.Error("failed select a leader.")
+				return
+			}
+
+			// time.Sleep(10 * )
+			var s *server.Server
+			s, err = DisconnectLeader(t, servers, true)
+			if err != nil {
+				t.Errorf(err.Error())
+				return
+			}
+			if s == nil {
+				t.Errorf("server is nil")
+				return
+			}
+			if tt.reconnect {
+				// reconnect back
+				s.Reconnect()
+				time.Sleep(5 * time.Second)
+				if err = IsConnected(t, s, servers, testVerbose); err != nil {
+					t.Errorf(err.Error())
+				}
+			}
+
+			// wait a bit and check
+			time.Sleep(2 * time.Second)
+			leaders := 0
+			for _, s := range servers {
+				_, _, ok := s.IsLeader()
+				if ok {
+					leaders++
+				}
+			}
+
+			if tt.reconnect {
+				// if cluster partition we should have two leader
+				if leaders > 1 {
+					t.Errorf("expected 1 leader got %d", leaders)
+					return
+				}
+			} else {
+				// if node reconnected we should have one leader
+				if leaders != 2 {
+					t.Errorf("expected two leader got %d", leaders)
+					return
+				}
+			}
+
+			if testVerbose {
+				t.Log("Shutdown all servers.")
+			}
+
+			for _, s := range servers {
+				s.Shutdown()
+			}
+
+			// wait for all port to be released
+			for released := 0; released <= len(servers); {
+				for _, s := range servers {
+					if server.CheckSocket(s.ServerBind(), "tcp") {
+						t.Log("server released port ", s.ServerBind())
+						released++
+					}
+				}
+			}
+
+			for released := 0; released <= len(servers); {
+				for _, s := range servers {
+					if server.CheckSocket(s.RESTEndpoint().RestNetworkBind, "tcp") {
+						t.Log("server released port ", s.ServerBind())
+						released++
+					}
+				}
+			}
+			servers = nil
+		})
+
+		<-quit
+		// when all test are finished teardown and close a channels.
+		// wait all test to finish
+	}
+
+	t.Log("Done.")
+}
+
+/**
+Check if server connected to a cluster
+*/
+func IsConnected(t *testing.T, server *server.Server, servers []*server.Server, verbose bool) error {
+
+	// find a leader and disconnect
+	leaderPresent := false
+	for _, s := range servers {
+		if _, _, ok := s.IsLeader(); ok {
+			leaderPresent = true
+		}
+	}
+
+	if !leaderPresent {
+		return fmt.Errorf("no leader in the cluster")
+	}
+
+	// check old leader disconnected from the rest
+	if server != nil {
+		// wait
+		var ready = 0
+		var sleep time.Duration = 150
+		for i := 0; i < 10; i++ {
+			peers := server.PeerStatus()
+			for i, _ := range peers {
+				if peers[i].State == connectivity.Ready {
+					ready++
+				}
+			}
+			// number of ready must same as number of node in cluster
+			if ready == len(servers) {
+				break
+			}
+			// sleep and increase counter , so we wait convergence
+			time.Sleep(sleep * time.Millisecond)
+		}
+
+		if ready != len(servers) {
+			return fmt.Errorf("failed disconnect. number of ready node %v", ready)
+		}
+	}
+
+	return nil
+}
+
+/**
+	Disconnect leader and if it confirmed return pointer to a server and no error
+    otherwise will return error.
+*/
+func DisconnectLeader(t *testing.T, servers []*server.Server, verbose bool) (*server.Server, error) {
+
+	if len(servers) <= 1 {
+		t.Log("Number of server suppose to be more than 1.")
+	}
+
+	// find a leader and disconnect
+	var oldLeader *server.Server = nil
+	for i, s := range servers {
+		if _, _, ok := s.IsLeader(); ok {
+			s.Disconnect()
+			oldLeader = servers[i]
+			break
+		}
+		if verbose {
+			t.Log("found leader")
+		}
+	}
+
+	// check old leader disconnected from the rest
+	time.Sleep(1 * time.Second)
+	if oldLeader != nil {
+		if oldLeader.IsDisconnected() == false {
+			return nil, fmt.Errorf("server must be already in disconnect state")
+		} else {
+			if verbose {
+				t.Log("server disconnected")
+			}
+		}
+
+		// wait
+		var ready = 0
+		var sleep time.Duration = 100
+		for i := 0; i < 10; i++ {
+			ready = 0
+			peers := oldLeader.PeerStatus()
+			for i, _ := range peers {
+				if peers[i].State == connectivity.Ready {
+					ready++
+				}
+			}
+			if ready <= 1 {
+				if verbose {
+					t.Log("all connection closed")
+				}
+				break
+			}
+			// sleep and increase counter , so we wait convergence
+			time.Sleep(sleep * time.Millisecond)
+		}
+
+		if ready > 1 {
+			return nil, fmt.Errorf("failed disconnect. number of ready node %v", ready)
+		}
+	}
+
+	return oldLeader, nil
+}
+
+/**
+Should return a cluster leader, after all node converge to stable state
 */
 func getLeader(t *testing.T, repeat int, timeout time.Duration, servers []*server.Server, verbose bool) *server.Server {
 
@@ -997,8 +1246,11 @@ func getLeader(t *testing.T, repeat int, timeout time.Duration, servers []*serve
 		ticker := time.NewTicker(timeout)
 		<-ticker.C
 		for _, s := range servers {
-			leaderId, _, isLeader := s.RaftState().Status()
+			leaderId, term, isLeader := s.RaftState().Status()
 			if isLeader == true {
+				if verbose {
+					t.Logf("found leader, leader id %v, term %v", leaderId, term)
+				}
 				currentLeader = leaderId
 				converged = true
 				break
@@ -1010,6 +1262,10 @@ func getLeader(t *testing.T, repeat int, timeout time.Duration, servers []*serve
 	// otherwise passed
 	if currentLeader == 0 {
 		t.Errorf("leader id (type %v), expected none zero id", currentLeader)
+	}
+
+	if verbose {
+		t.Logf("Checking single leader invariant")
 	}
 
 	// we check that only one server is leader

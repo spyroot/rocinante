@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"html/template"
 	"net/http"
+	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	pb "../../api"
@@ -19,7 +23,7 @@ import (
 const ApiTransport string = "http://"
 const ApiLeader string = "/leader"
 const ApiSubmit string = "/submit"
-const ApiShutdown string = "/shutdown"
+const ApiShutdown string = "/shutdownGrpc"
 const ApiLog string = "/log"
 const ApiCommitted string = "/committed"
 const ApiGet string = "/get"
@@ -28,9 +32,17 @@ const ApiIndex = "/"
 const DefaultLogSize int = 5
 
 type Restful struct {
-	lock    sync.Mutex
-	server  *Server
+	// server mutex
+	lock sync.Mutex
+	// a pointer to instantiated rest server.
+	server *Server
+	// a pointer to http server
+	restServer *http.Server
+	// base dir where all template , logs
 	basedir string
+	// a channel that we wait for shutdownGrpc
+	shutdownRequest  chan bool
+	shutdownReqCount uint32
 }
 
 type Peer struct {
@@ -82,7 +94,7 @@ type HttpValueRespond struct {
 /*
 	Router handler for restful API
 */
-func NewRestfulServer(s *Server, bind string, baseDir string) (*Restful, error) {
+func NewRestfulServer(s *Server, bind string, baseDir string, ready chan<- bool) (*Restful, error) {
 
 	r := new(Restful)
 	r.server = s
@@ -95,20 +107,35 @@ func NewRestfulServer(s *Server, bind string, baseDir string) (*Restful, error) 
 	router.HandleFunc(ApiCommitted, r.getCommitted)
 	router.HandleFunc(ApiGet+"/{key}", r.getValue)
 	router.HandleFunc(ApiLog, r.getLog)
-	router.HandleFunc(ApiShutdown, r.shutdown)
+	router.HandleFunc(ApiShutdown, r.shutdownGrpc)
 	router.HandleFunc(ApiLeader, r.leader)
 	router.HandleFunc(ApiPeerList, r.peerList)
 
 	glog.Infof("[restful server started]: %s", bind)
 
-	srv := &http.Server{
+	r.restServer = &http.Server{
 		Handler:      router,
 		Addr:         bind,
 		WriteTimeout: 15 * time.Second,
 		ReadTimeout:  15 * time.Second,
 	}
 
-	go srv.ListenAndServe()
+	// TODO add another channel to wait on ready
+	// specifically if server need time to boot before boot rest interface
+	done := make(chan bool)
+	go func() {
+		err := r.restServer.ListenAndServe()
+		if err != nil {
+			glog.Errorf("Listen and serve %v", err)
+		}
+		done <- true
+	}()
+
+	ready <- true
+
+	// wait for shutdown
+	r.WaitShutdown()
+	<-done
 
 	return r, nil
 }
@@ -386,9 +413,9 @@ func (rest *Restful) getValue(w http.ResponseWriter, r *http.Request) {
 }
 
 /*
-	REST call handle for shutdown server
+	REST call handle for shutdownGrpc server
 */
-func (rest *Restful) shutdown(w http.ResponseWriter, r *http.Request) {
+func (rest *Restful) shutdownGrpc(w http.ResponseWriter, r *http.Request) {
 	rest.server.Shutdown()
 }
 
@@ -421,6 +448,10 @@ func (rest *Restful) peerList(w http.ResponseWriter, r *http.Request) {
 	default chunk size 5 last records.
 */
 func (rest *Restful) getCommitted(w http.ResponseWriter, r *http.Request) {
+
+	if rest == nil {
+		return
+	}
 
 	storageCopy := rest.server.db.GetCopy()
 	w.Header().Set("Content-Type", "application/json")
@@ -466,4 +497,79 @@ func (rest *Restful) getCommitted(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Errorf("empty respond").Error(), http.StatusInternalServerError)
 		return
 	}
+}
+
+/**
+A method wait on channel for signal to shutdown server.
+*/
+func (rest *Restful) WaitShutdown() {
+
+	if rest == nil {
+		return
+	}
+
+	irqSig := make(chan os.Signal, 1)
+	signal.Notify(irqSig, syscall.SIGINT, syscall.SIGTERM)
+
+	select {
+	// interrupt handler sig term to shutdown
+	case sig := <-irqSig:
+		glog.Infof("Shutdown request from a signal %v", sig)
+	// shutdown request
+	case sig := <-rest.shutdownRequest:
+		glog.Infof("Shutdown request (/shutdownGrpc %v)", sig)
+	}
+
+	glog.Infof("sending shutdown command to rest server ...")
+
+	//Create shutdownGrpc context with 10 second timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := rest.restServer.Shutdown(ctx)
+	if err != nil {
+		glog.Infof("Shutdown request error: %v", err)
+	}
+}
+
+/**
+Public handler to shutdown rest web server
+*/
+func (rest *Restful) ShutdownHandler(w http.ResponseWriter, r *http.Request) {
+
+	if rest == nil {
+		return
+	}
+
+	_, err := w.Write([]byte("Shutdown server"))
+	if err != nil {
+		glog.Errorf(err.Error())
+	}
+	rest.shutdownRest()
+}
+
+/*
+	Shutdown a server, consumed mainly by rocinante internally
+*/
+func (rest *Restful) shutdownRest() {
+
+	if rest == nil {
+		return
+	}
+
+	rest.shutdownRequest <- true
+
+	rest.lock.Lock()
+	defer rest.lock.Unlock()
+	if rest == nil {
+		return
+	}
+	if !atomic.CompareAndSwapUint32(&rest.shutdownReqCount, 0, 1) {
+		glog.Infof("Shutdown through API call in progress...")
+		return
+	}
+	// write to channel and signal
+	go func() {
+		rest.shutdownRequest <- true
+	}()
 }
