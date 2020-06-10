@@ -14,16 +14,15 @@ package client
 
 import (
 	"context"
+	b64 "encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
-	b64 "encoding/base64"
-
-	"../server"
 	"github.com/golang/glog"
+	"github.com/spyroot/rocinante/pkg/server"
 )
 
 type RestClient struct {

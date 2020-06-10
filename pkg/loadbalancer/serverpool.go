@@ -4,7 +4,7 @@
   It support round robin and weight selection.
 
   Mustafa Bayramov
- */
+*/
 package loadbalancer
 
 import (
@@ -14,27 +14,27 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"../client"
-	hs "../hash"
+	"github.com/spyroot/rocinante/pkg/client"
+	hs "github.com/spyroot/rocinante/pkg/hash"
+
 	"github.com/golang/glog"
 )
 
 type ServerPool struct {
-
 	lock     sync.Mutex
 	members  []*ServerFarm
 	current  uint64
 	poolSize uint64
 
-	api		 *client.RestClient
+	api *client.RestClient
 }
 
 /**
-	Source hash selection.
+Source hash selection.
 
-	Hash source (address, port) mod num_server_alive
+Hash source (address, port) mod num_server_alive
 
- */
+*/
 func (s *ServerPool) HashSelection(addr net.IP, srcPort uint32) (*ServerFarm, error) {
 
 	var numAlive = 0
@@ -44,19 +44,18 @@ func (s *ServerPool) HashSelection(addr net.IP, srcPort uint32) (*ServerFarm, er
 		}
 	}
 	if numAlive == 0 {
-		return nil,  fmt.Errorf("all server are dead")
+		return nil, fmt.Errorf("all server are dead")
 	}
 
 	// hash
-	hash := hs.HashAddrPort(addr, srcPort) %  uint64(numAlive)
+	hash := hs.HashAddrPort(addr, srcPort) % uint64(numAlive)
 	glog.Infof("Server hash id %d,  serialize hash to cluster", hash)
 	return s.members[hash], nil
 }
 
-
 /*
-     Adds server to a pool
- */
+   Adds server to a pool
+*/
 func (s *ServerPool) Add(backend *ServerFarm) {
 	if s != nil {
 		s.lock.Lock()
@@ -68,8 +67,8 @@ func (s *ServerPool) Add(backend *ServerFarm) {
 }
 
 /**
-   Return next server from a pool
- */
+  Return next server from a pool
+*/
 func (s *ServerPool) Next() uint64 {
 	if s == nil {
 		return 0
@@ -81,7 +80,7 @@ func (s *ServerPool) Next() uint64 {
 
 /*
 	Iterate over server pool ad adjust status.
- */
+*/
 func (s *ServerPool) UpdateMemberStatus(backendUrl *url.URL, alive bool) {
 
 	s.lock.Lock()
@@ -97,8 +96,8 @@ func (s *ServerPool) UpdateMemberStatus(backendUrl *url.URL, alive bool) {
 
 /*
    Select server based on modulo operation in round robin
- */
-func (s *ServerPool) RoundRobin() (*ServerFarm,error) {
+*/
+func (s *ServerPool) RoundRobin() (*ServerFarm, error) {
 
 	if s == nil {
 		return nil, fmt.Errorf("server pool is nil")
@@ -115,12 +114,12 @@ func (s *ServerPool) RoundRobin() (*ServerFarm,error) {
 			return s.members[serverID], nil
 		}
 	}
-	return nil,  fmt.Errorf("all server are dead")
+	return nil, fmt.Errorf("all server are dead")
 }
 
 /**
-	For each member iterate and check health of the server
- */
+For each member iterate and check health of the server
+*/
 func (s *ServerPool) HealthCheck() {
 
 	s.lock.Lock()

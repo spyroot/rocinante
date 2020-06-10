@@ -20,9 +20,10 @@ import (
 	"testing"
 	"time"
 
-	pb "../../api"
-	"../client"
-	"../server"
+	pb "github.com/spyroot/rocinante/api"
+	"github.com/spyroot/rocinante/pkg/client"
+	"github.com/spyroot/rocinante/pkg/server"
+
 	"google.golang.org/grpc/connectivity"
 )
 

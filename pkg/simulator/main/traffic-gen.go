@@ -10,8 +10,8 @@ import (
 	"os"
 	"runtime"
 
-	flow "../../flow"
 	"github.com/golang/glog"
+	flow "github.com/spyroot/rocinante/pkg/flow"
 	"golang.org/x/sys/unix"
 )
 

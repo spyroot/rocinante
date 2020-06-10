@@ -1,11 +1,16 @@
+/*
+	Rocinante test app.
+	Generate and store data in the cluster
+
+	Mustafa Bayramov
+*/
 package main
 
 import (
 	"math/rand"
 	"time"
 
-	. "../../client"
-	"github.com/apex/log"
+	rocinante "github.com/spyroot/rocinante/pkg/client"
 )
 
 func init() {
@@ -30,7 +35,7 @@ func main() {
 	rand.Seed(time.Now().UnixNano())
 
 	// Set up a connection to the server.
-	apiClient, err := NewRestClientFromUrl("http://localhost:8001")
+	apiClient, err := rocinante.NewRestClientFromUrl("http://localhost:8001")
 	if err != nil {
 		log.Fatal(err.Error())
 		return

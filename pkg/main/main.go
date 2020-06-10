@@ -9,11 +9,12 @@ import (
 	"os/signal"
 	"syscall"
 
-	"../color"
-	hs "../hash"
-	"../io"
-	"../server"
-	"../server/artifacts"
+	"github.com/spyroot/rocinante/pkg/color"
+	hs "github.com/spyroot/rocinante/pkg/hash"
+	"github.com/spyroot/rocinante/pkg/io"
+	"github.com/spyroot/rocinante/pkg/server"
+	"github.com/spyroot/rocinante/pkg/server/artifacts"
+
 	"github.com/golang/glog"
 )
 

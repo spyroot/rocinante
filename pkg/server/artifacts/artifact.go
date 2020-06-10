@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"../../io"
 	"github.com/golang/glog"
+	"github.com/spyroot/rocinante/pkg/io"
 	"gopkg.in/yaml.v2"
 )
 

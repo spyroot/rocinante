@@ -6,9 +6,10 @@ import (
 	"sync"
 	"testing"
 
-	hs "../hash"
-	"../io"
-	"../server/artifacts"
+	hs "github.com/spyroot/rocinante/pkg/hash"
+	"github.com/spyroot/rocinante/pkg/io"
+	"github.com/spyroot/rocinante/pkg/server/artifacts"
+
 	"github.com/golang/glog"
 )
 

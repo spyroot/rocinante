@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	"../../loadbalancer"
-	"../artifacts"
 	"github.com/golang/glog"
+	"github.com/spyroot/rocinante/pkg/loadbalancer"
+	"github.com/spyroot/rocinante/pkg/loadbalancer/artifacts"
 )
 
 // usage for load balancer in rocinante

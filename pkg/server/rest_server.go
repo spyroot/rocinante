@@ -18,11 +18,10 @@ import (
 	"syscall"
 	"time"
 
-	flow "../flow"
+	pb "github.com/spyroot/rocinante/api"
+	"github.com/spyroot/rocinante/pkg/flow"
+	"github.com/spyroot/rocinante/pkg/io"
 
-	pb "../../api"
-	"../io"
-	"github.com/apex/log"
 	"github.com/golang/glog"
 	"github.com/gorilla/mux"
 	weblogger "github.com/sirupsen/logrus"
@@ -177,7 +176,7 @@ func NewRestfulServer(s *Server, bind string, base string, ready chan<- bool) (*
 	if err == nil {
 		weblogger.SetOutput(file)
 	} else {
-		log.Info("Failed to log to file, using default stderr")
+		glog.Info("Failed to log to file, using default stderr")
 	}
 
 	standardFields := weblogger.Fields{

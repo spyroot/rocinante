@@ -15,9 +15,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	pb "../../api"
-	"../../pkg/color"
 	"github.com/golang/glog"
+	pb "github.com/spyroot/rocinante/api"
+	"github.com/spyroot/rocinante/pkg/color"
 )
 
 type ProtocolState int

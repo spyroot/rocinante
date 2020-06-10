@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/gob"
 	"fmt"
+	"log"
 	"os"
 	"os/signal"
 	"strconv"
@@ -13,15 +14,14 @@ import (
 
 	goflag "flag"
 
-	"../../loadbalancer/artifacts"
-	"github.com/apex/log"
+	rocinante "github.com/spyroot/rocinante/pkg/client"
+	"github.com/spyroot/rocinante/pkg/flow"
+
 	"github.com/golang/glog"
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/pcap"
 	"github.com/spf13/cobra"
-
-	rocinate "../../client"
-	flow "../../flow"
+	"github.com/spyroot/rocinante/pkg/loadbalancer/artifacts"
 )
 
 type Sniffer struct {
@@ -169,7 +169,7 @@ func (s *Sniffer) startCapture(captureReady chan<- map[uint64][]flow.Hdr) {
 /**
 
  */
-func (s *Sniffer) publish(id int, client *rocinate.RestClient, captureReady <-chan map[uint64][]flow.Hdr, publishReady chan<- struct{}) {
+func (s *Sniffer) publish(id int, client *rocinante.RestClient, captureReady <-chan map[uint64][]flow.Hdr, publishReady chan<- struct{}) {
 
 	if s.verbose {
 		glog.Infof("Publisher")
@@ -190,11 +190,11 @@ func (s *Sniffer) publish(id int, client *rocinate.RestClient, captureReady <-ch
 			k := strconv.FormatUint(key, 10)
 			ok, err := client.Store(k, buffer.Bytes())
 			if err != nil {
-				log.Infof("Failed to store value server return %v", err)
+				glog.Infof("Failed to store value server return %v", err)
 				break
 			}
 			if ok == false {
-				log.Infof("Failed to store", err)
+				glog.Infof("Failed to store", err)
 				break
 			}
 			time.Sleep(250 * time.Millisecond)
@@ -226,7 +226,7 @@ func (s *Sniffer) start() {
 		// Set up a connection to the server.
 		go func(id int) {
 			// rest client per each thread
-			apiClient, err := rocinate.NewRestClient(s.apiRestEndpoints)
+			apiClient, err := rocinante.NewRestClient(s.apiRestEndpoints)
 			if err != nil {
 				log.Fatal(err.Error())
 				return

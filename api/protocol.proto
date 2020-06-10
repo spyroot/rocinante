@@ -2,14 +2,10 @@ syntax = "proto3";
 package api;
 
 service Raft {
-    // Sends a ping
     rpc Ping (PingMessage) returns (PongReply) {}
     rpc RequestVoteCall (RequestVote) returns (RequestVoteReply) {}
     rpc AppendEntriesCall (AppendEntries) returns (AppendEntriesReply) {}
     rpc SubmitCall (SubmitEntry) returns (SubmitReply) {}
-
-//    // Sends another greeting
-//    rpc SayHelloAgain (PingMessage) returns (PongReply) {}
 }
 
 // The request message containing the user's name.

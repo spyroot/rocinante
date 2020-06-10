@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"../client"
 	"github.com/golang/glog"
+	"github.com/spyroot/rocinante/pkg/client"
 )
 
 type ProbeMethod int

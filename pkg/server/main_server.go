@@ -12,9 +12,10 @@ import (
 	"sync"
 	"time"
 
-	pb "../../api"
-	"../../pkg/color"
-	"../io"
+	pb "github.com/spyroot/rocinante/api"
+	"github.com/spyroot/rocinante/pkg/color"
+	"github.com/spyroot/rocinante/pkg/io"
+
 	"github.com/golang/glog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
