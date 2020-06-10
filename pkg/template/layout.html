@@ -231,16 +231,15 @@
 
         var s = '/shutdownNode/'
         req = s.concat(placeholder)
-        alert(req)
 
         $.ajax({
             url: req,
             type: "GET",
             success:function(){
-                // alert("done");
+                location.reload();
             },
             error:function (){
-                // alert("testing error");
+                location.reload();
             }
         });
         return false;
@@ -248,21 +247,17 @@
 
     function Shutdown(placeholder) {
 
-        // var s = '/shutdownNode'
-        // req = s.concat($(placeholder))
-        // alert(req)
-        //
-        // $.ajax({
-        //                url: $(placeholder).attr('rel'),
-        //     type: "GET",
-        //     success:function(){
-        //        // alert("done");
-        //     },
-        //     error:function (){
-        //         alert("testing error");
-        //     }
-        // });
-        // return false;
+        $.ajax({
+            url: $(placeholder).attr('rel'),
+            type: "GET",
+            success:function(){
+                location.reload();
+            },
+            error:function (){
+                location.reload();
+            }
+        });
+        return false;
     }
 
 </script>

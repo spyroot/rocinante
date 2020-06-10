@@ -320,8 +320,10 @@ func (rest *Restful) HandlerIndex(w http.ResponseWriter, r *http.Request) {
 		}
 
 		data.ServerStatus = append(data.ServerStatus, cur)
-		prev = p.RaftNetworkBind
-		prevID = currentPeerId
+		if pstat != "Dead" {
+			prev = p.RaftNetworkBind
+			prevID = currentPeerId
+		}
 	}
 
 	svp := Peer{
@@ -565,7 +567,7 @@ func (rest *Restful) getLog(w http.ResponseWriter, r *http.Request) {
 
 	var resp LogRespond
 	chunkSize := Max(0, len(log)-limit)
-	resp.Last_page = limit
+	resp.Last_page = 0
 	for i := len(log) - 1; i >= chunkSize; i-- {
 		resp.Data = append(resp.Data, LogRespondEntry{
 			Key:    log[i].Command.Key,
@@ -573,6 +575,7 @@ func (rest *Restful) getLog(w http.ResponseWriter, r *http.Request) {
 			Term:   log[i].Term,
 			Synced: true,
 		})
+		resp.Last_page++
 	}
 
 	//
@@ -612,9 +615,13 @@ func (rest *Restful) getValue(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	key := vars["key"]
 
-	encodedVal, err := b64.URLEncoding.DecodeString(key)
-
 	if len(key) == 0 {
+		return
+	}
+
+	encodedVal, err := b64.URLEncoding.DecodeString(key)
+	if err != nil {
+		http.Error(w, "failed decode key", http.StatusNotFound)
 		return
 	}
 
@@ -699,7 +706,7 @@ func (rest *Restful) getCommitted(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var resp []LogRespondEntry
-	chunkSize := Max(0, len(storageCopy)-limit)
+	chunkSize := Min(len(storageCopy), limit)
 
 	count := 0
 	for k, v := range storageCopy {

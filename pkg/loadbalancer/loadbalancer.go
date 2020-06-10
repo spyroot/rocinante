@@ -134,6 +134,7 @@ func (lb *LoadBalancer) sourceHashHandler(w http.ResponseWriter, r *http.Request
 		}
 	}
 
+	//TODO
 	// we don't wait respond
 	go func(s *ServerFarm, api *client.RestClient) {
 		if api != nil && s != nil {

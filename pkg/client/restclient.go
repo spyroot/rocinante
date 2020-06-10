@@ -337,13 +337,15 @@ func (r *RestClient) Get(key string) (*server.HttpValueRespond, error) {
 			glog.Infof("Failed decode respond", err)
 		}
 
-		sDec, err := b64.StdEncoding.DecodeString(string(respond.Value))
-		if err != nil {
-			glog.Infof("Failed decode base64 respond", err)
+		//sDec, err := b64.URLEncoding.DecodeString(string(respond.Value))
+		//if err != nil {
+		//	glog.Infof("Failed decode base64 respond.", err)
+		//}
+		//
+		//respond.Value = sDec
+		if r.verbose {
+			glog.Infof(" received respond %v", respond)
 		}
-
-		respond.Value = sDec
-		glog.Infof(" received respond %v", respond)
 		return &respond, nil
 	}
 
