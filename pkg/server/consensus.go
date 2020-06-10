@@ -35,7 +35,8 @@ const FACTOR = 1
 const REFESH_TIME = 10 * FACTOR
 const HEARBEAT_INTERVAL = 50 * FACTOR
 
-const ElectionLog bool = false
+const ElectionLogReport bool = false
+const RpcErrorReport bool = false
 
 const (
 	RequestVoteReq ProtocolMessage = iota
@@ -89,9 +90,11 @@ type RaftProtocol struct {
 	// we than send commit msg on another channel , when we collect majority
 	// we write to commit ready
 	commitReadyChan chan CommitReady
-	commitChan      chan<- CommitEntry
-
-	//commitChan chan CommitEntry
+	// commit channel where we send commited data, on return we get ack via bi-directional channel.
+	// todo add second part
+	commitChan chan<- CommitEntry
+	// storage signal , data spooled on return send signal via channel
+	storageReady chan<- struct{}
 
 	// number of peers
 	numberPeers int
@@ -183,15 +186,12 @@ func (raft *RaftProtocol) RequestVote(vote *pb.RequestVote) (RequestVoteReply, e
 	// 2. If votedFor is null or candidateId, and candidate’s log is at
 	// least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
 
-	lastLogIndex, lastLogTerm := raft.lastLogIndexAndTerm()
+	mylastLogIndex, mylastLogTerm := raft.lastLogIndexAndTerm()
 
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
-	if raft.currentTerm == vote.Term &&
-		// if my term was old I set votedFor MaxUint64 so I should
-		// grant a vote for a candidate
-		(raft.votedFor == math.MaxUint64 || raft.votedFor == vote.CandidateId) &&
-		(vote.LastLogTerm > lastLogTerm || (vote.LastLogTerm == lastLogTerm && vote.LastLogIndex >= lastLogIndex)) {
+	if raft.currentTerm == vote.Term ||
+		(vote.LastLogTerm > mylastLogTerm || (vote.LastLogTerm == mylastLogTerm && vote.LastLogIndex >= mylastLogIndex && mylastLogIndex != math.MaxUint64)) {
 		reply.VoteGranted = true
 		raft.votedFor = vote.CandidateId
 		raft.electionResetEvent = time.Now()
@@ -445,7 +445,7 @@ func (raft *RaftProtocol) isExpired(termStarted uint64) bool {
 
 	// state changed
 	if raft.state != Candidate && raft.state != Follower {
-		if ElectionLog {
+		if ElectionLogReport {
 			raft.log("in election state change state=%s, withdraw", raft.state)
 		}
 		return false
@@ -453,7 +453,7 @@ func (raft *RaftProtocol) isExpired(termStarted uint64) bool {
 
 	// term change
 	if termStarted != raft.currentTerm {
-		if ElectionLog {
+		if ElectionLogReport {
 			raft.log("in election term changed from %d to %d, withdraw", termStarted, raft.currentTerm)
 		}
 		return false
@@ -507,7 +507,7 @@ func (raft *RaftProtocol) runElectionTimer() {
 
 		raft.mu.Lock()
 		currentState := raft.state
-		if ElectionLog {
+		if ElectionLogReport {
 			raft.log("time to elect, kicked in (%v), term=%d my role=%v", timeoutDuration, termStarted, currentState)
 		}
 
@@ -808,9 +808,11 @@ func (raft *RaftProtocol) broadcastMsg(peer uint64, myTerm uint64) error {
 		return nil
 	}
 	if err != nil {
-		glog.Errorf("invalid respond to an rpc call peer "+
-			"%v: nextIndex=%d, log index=%+v,  prev log term = [%v], err=[%+v]",
-			peer, 0, appendEntry.PrevLogIndex, appendEntry.PrevLogTerm, err)
+		if RpcErrorReport {
+			glog.Errorf("invalid respond to an rpc call peer "+
+				"%v: nextIndex=%d, log index=%+v,  prev log term = [%v], err=[%+v]",
+				peer, 0, appendEntry.PrevLogIndex, appendEntry.PrevLogTerm, err)
+		}
 		return nil
 	}
 
@@ -935,9 +937,17 @@ Shutdown raft sub-system
 func (raft *RaftProtocol) Shutdown() {
 	raft.mu.Lock()
 	defer raft.mu.Unlock()
+
+	if raft.state == Dead {
+		return
+	}
+
 	raft.state = Dead
 	raft.log("Server shutdownGrpc.")
-	close(raft.commitReadyChan)
+
+	if raft.commitReadyChan != nil {
+		close(raft.commitReadyChan)
+	}
 }
 
 /**
@@ -961,7 +971,7 @@ func (raft *RaftProtocol) commitChannel() {
 				raft.volatileState.setLastApplied(raft.volatileState.CommitIndex())
 			}
 
-			raft.log("committed log committedEntries=%v, lastApplied=%d", committedEntries, oldLastApplied)
+			raft.log("committed log lastApplied=%d", oldLastApplied)
 			raft.mu.Unlock()
 
 			// for each committed log entry

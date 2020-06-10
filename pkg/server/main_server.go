@@ -139,6 +139,15 @@ type Server struct {
 	// grpc listnner
 	listener *net.Listener
 
+	restOn bool
+
+	submitRx int
+
+	voteRx   int
+	voteTx   int
+	appendRx int
+	appendTx int
+
 	// proto buffer
 	pb.UnimplementedRaftServer
 	pb.RequestVote
@@ -166,6 +175,8 @@ func (s *Server) RequestVoteCall(ctx context.Context, vote *pb.RequestVote) (*pb
 	if s.serverState == Init || s.serverState == Disconnected {
 		return nil, fmt.Errorf("server in init or disconnected")
 	}
+
+	s.voteRx++
 
 	glog.Infof("[rpc server handler] rx vote for a candidate %v", vote.CandidateId)
 	//time.Sleep(time.Duration(1 + rand.Intn(5)) * time.Millisecond)
@@ -210,7 +221,7 @@ func (s *Server) LastLeader() (*ServerSpec, uint64, bool) {
 }
 
 /**
-	A commit loop that continuously reads from commit channel and submit
+	A commit loop that continuously reads from commit channel and SubmitKeyValue
     data to in memory or persistent storage.  persistent on or memory
 */
 func (s *Server) ReadCommits() {
@@ -228,15 +239,10 @@ func (s *Server) ReadCommits() {
 		select {
 		case c := <-s.commitProducer:
 			msg := color.Green + "received from channel commit index" + color.Reset
-			glog.Infof("%s %d", msg, c.Index, c.Command.Key, c.Command.Value)
+			glog.Infof("%s %d %v %d", msg, c.Index, c.Command.Key, s.db.Size())
 
 			// store and check.
 			s.db.Set(c.Command.Key, c.Command.Value)
-
-			val, ok := s.db.Get(c.Command.Key)
-			if ok == false {
-				log.Fatal("Failed to store val", val)
-			}
 
 			buf := make([]byte, 8)
 			binary.LittleEndian.PutUint64(buf, c.Index)
@@ -269,30 +275,31 @@ func (s *Server) AppendEntriesCall(ctx context.Context, req *pb.AppendEntries) (
 		return nil, fmt.Errorf("server in init or disconnected")
 	}
 
+	s.appendRx++
+
 	glog.Infof("[rpc server handler] rx append entries from a leader [%v] term [%v]", req.LeaderId, req.Term)
 
-	d := time.Now().Add(50 * time.Millisecond)
-	ctx, cancel := context.WithDeadline(context.Background(), d)
-
-	// Even though ctx will be expired, it is good practice to call its
-	// cancellation function in any case. Failure to do so may keep the
-	// context and its parent alive longer than necessary.
-	defer cancel()
-
-	select {
-	case <-time.After(1 * time.Second):
-		fmt.Println("overslept")
-	case <-ctx.Done():
-		fmt.Println(ctx.Err())
-	default:
-	}
+	//d := time.Now().Add(50 * time.Millisecond)
+	//ctx, cancel := context.WithDeadline(context.Background(), d)
+	//
+	//defer cancel()
+	//
+	//select {
+	//	case <-time.After(1 * time.Second):
+	//		fmt.Println("overslept")
+	//case <-ctx.Done():
+	//		fmt.Println(ctx.Err())
+	//default:
+	//}
 
 	rep, err := s.raftState.AppendEntries(req)
 
 	// update last leader seen
+	s.lock.Lock()
 	s.LastLeaderId = req.LeaderId
 	s.LastUpdate = time.Now()
 	s.LastTerm = req.Term
+	s.lock.Unlock()
 
 	if err != nil {
 		glog.Errorf("[rpc server:] append failed %v", err)
@@ -367,6 +374,8 @@ func (s *Server) GetValue(ctx context.Context, key string) (*GetValueRespond, er
  */
 func (s *Server) SubmitCall(ctx context.Context, req *pb.SubmitEntry) (*pb.SubmitReply, error) {
 
+	s.submitRx++
+
 	if s == nil {
 		return nil, fmt.Errorf("server uninitialized")
 	}
@@ -386,11 +395,11 @@ func (s *Server) SubmitCall(ctx context.Context, req *pb.SubmitEntry) (*pb.Submi
 
 	ok := s.raftState.Submit(req.Command)
 	if ok == false {
-		glog.Errorf("[rpc server:] submit failed")
+		glog.Errorf("[rpc server:] SubmitKeyValue failed")
 		return nil, nil
 	}
 
-	glog.Infof("replay for submit req [%v]", ok)
+	glog.Infof("replay for SubmitKeyValue req [%v]", ok)
 
 	leaderEndpoint := s.peerSpec[s.LeaderId].RaftNetworkBind
 
@@ -484,7 +493,7 @@ func (s *Server) GetPeerID(bind string) uint64 {
   - peers must holds all other peer specs.
   - port is bind address.
 */
-func NewServer(spec ServerSpec, peers []ServerSpec, port string, ready <-chan interface{}) (*Server, error) {
+func NewServer(spec ServerSpec, peers []ServerSpec, port string, restOn bool, ready <-chan interface{}) (*Server, error) {
 
 	s := new(Server)
 	// storage for key value
@@ -497,6 +506,7 @@ func NewServer(spec ServerSpec, peers []ServerSpec, port string, ready <-chan in
 	s.serverBind = spec.RaftNetworkBind
 	s.serverSpec = spec
 	s.serverState = Init
+	s.restOn = restOn
 
 	if len(peers) == 0 {
 		log.Fatal("Error", len(peers))
@@ -555,6 +565,13 @@ func (s *Server) StartRest() {
 	}()
 	// wait for server tell it ready
 	<-s.restReady
+}
+
+/**
+
+ */
+func (s *Server) StopRest() {
+	s.rest.shutdownRest()
 }
 
 /**
@@ -687,7 +704,9 @@ func (s *Server) Serve() error {
 			}(peerId)
 		}
 
+		s.lock.Lock()
 		s.serverState = Running
+		s.lock.Unlock()
 
 		// server added to wait group
 		s.wait.Add(1)
@@ -695,7 +714,8 @@ func (s *Server) Serve() error {
 			if err := s.rpc.Serve(lis); err != nil {
 				log.Fatalf("[rpc server] failed serve: %v", err)
 			}
-
+			s.lock.Lock()
+			defer s.lock.Unlock()
 			s.listener = &lis
 			s.wait.Done()
 		}()
@@ -830,35 +850,88 @@ func (s *Server) Shutdown() {
 		return
 	}
 
+	s.serverState = Shutdown
+
 	if s.rest != nil {
 		// shutdown rest
 		glog.Infof("Sending signal to rest server to shutdown. %v", s.serverState)
 		s.rest.shutdownRest()
-		//for released := 0; released <= 1; {
-		//	if io.CheckSocket(s.RESTEndpoint().RestNetworkBind, "tcp") {
-		//			glog.Infof("server released port ", s.ServerBind())
-		//			released++
-		//	}
+		//s.rest.StopRest()
+		for r := 0; r < 3; r++ {
+			released := 0
+			for released <= 1 {
+				if io.CheckSocket(s.RESTEndpoint().RestNetworkBind, "tcp") {
+					glog.Infof("server released port %v", s.ServerBind())
+					released++
+					break
+				}
+			}
+			if released == 1 {
+				break
+			}
+			time.Sleep(2 * time.Second)
+		}
 	}
 
 	s.lock.Unlock()
 	glog.Infof("server going to shutdown grpc state")
 	// shutdownGrpc raft state
-	s.raftState.Shutdown()
+	if s.raftState != nil {
+		s.raftState.Shutdown()
+	}
 	// close all peer connection
 	glog.Infof("closing all peer connections")
 	for _, p := range s.peerClient {
-		_ = p.Close()
+		if p != nil {
+			_ = p.Close()
+		}
 	}
 	s.peerClient = make(map[uint64]*grpc.ClientConn)
 
 	// stop grpc server
 	s.rpc.GracefulStop()
 	// close quit channel
-	close(s.quit)
+	if s.quit != nil {
+		close(s.quit)
+	}
+
+	s.lock.Lock()
+	defer s.lock.Unlock()
 	if s.listener != nil {
 		(*s.listener).Close()
 	}
+}
+
+func (s *Server) ShutdownGrpc() {
+
+	if s == nil {
+		return
+	}
+
+	s.lock.Lock()
+	if s.serverState == Shutdown {
+		glog.Infof("Changed server state to ", s.serverState)
+		s.lock.Unlock()
+		return
+	}
+
+	s.serverState = Shutdown
+
+	s.lock.Unlock()
+	glog.Infof("server going to shutdown grpc state")
+
+	// close all peer connection
+	glog.Infof("closing all peer connections")
+	for _, p := range s.peerClient {
+		if p != nil {
+			_ = p.Close()
+		}
+	}
+	s.peerClient = make(map[uint64]*grpc.ClientConn)
+
+	// stop grpc server
+	s.rpc.GracefulStop()
+	// close quit channel
 }
 
 /**
@@ -1000,10 +1073,14 @@ func (s *Server) IsRunning() bool {
 
 // return true if disconnected or not
 func (s *Server) IsDisconnected() bool {
+	s.lock.Lock()
+	defer s.lock.Unlock()
 	return s.serverState == Disconnected
 }
 
 func (s *Server) IsShutdown() bool {
+	s.lock.Lock()
+	defer s.lock.Unlock()
 	return s.serverState == Shutdown
 }
 
@@ -1038,4 +1115,25 @@ func connectionOnState(ctx context.Context, conn *grpc.ClientConn, states ...con
 	}()
 
 	return done
+}
+
+func (s *Server) startStatCollector() {
+
+	if s == nil {
+		return
+	}
+
+	//	oldVote := 0
+
+	go func() {
+		ticker := time.NewTicker(1 * time.Second)
+		defer ticker.Stop()
+
+		// Send periodic group broadcast heartbeats, as long we are leader.
+		for {
+			<-ticker.C
+			//delta := s.voteRx
+			//s.voteRx = 0
+		}
+	}()
 }

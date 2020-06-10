@@ -1,6 +1,8 @@
 /**
-  Load balancer artifact
- */
+  Load balancer artifact yaml parser and reader.
+
+  Mustafa Bayramov
+*/
 package artifacts
 
 import (
@@ -13,29 +15,38 @@ import (
 )
 
 /**
-   Configuration section for load balancer
- */
+  Configuration section for load balancer
+*/
 type Server struct {
-	Address 	string 				`yaml:"address"`
-	Port        string 				`yaml:"port"`
+	Address string `yaml:"address"`
+	Port    string `yaml:"port"`
 }
 
+/**
+  Configuration section for rocinante api end point
+*/
 type Api struct {
-	Address 	string 				`yaml:"address"`
-	Rest        string 				`yaml:"rest"`
-	Grpc        string 				`yaml:"grpc"`
+	Address string `yaml:"address"`
+	Rest    string `yaml:"rest"`
+	Grpc    string `yaml:"grpc"`
 }
 
+/**
+Load balancer pool root section artifact
+*/
 type Pool struct {
-	Name        string       		`yaml:"name"`
-	Api 		[]Api				`yaml:"api"`
-	Servers 	[]Server 			`yaml:"servers"`
+	Name    string   `yaml:"name"`
+	Api     []Api    `yaml:"api"`
+	Servers []Server `yaml:"servers"`
 }
 
+/**
+Load balancer root section artifact
+*/
 type Artifact struct {
 	Service struct {
-		Pool           Pool  	`yaml:"pool"`
-	}  `yaml:"artifact"`
+		Pool Pool `yaml:"pool"`
+	} `yaml:"artifact"`
 	BaseDir string
 }
 
@@ -51,7 +62,7 @@ func fileExists(filename string) bool {
 }
 
 /**
-Reads config.yml file and serialize everything in JetConfig struct.
+Reads config.yml file and serialize everything in struct.
 */
 func Read(file string) (Artifact, error) {
 
@@ -63,7 +74,7 @@ func Read(file string) (Artifact, error) {
 		if err != nil {
 			return artifact, err
 		}
-		glog.Info("Reading config ", pwd + "/" + file)
+		glog.Info("Reading config ", pwd+"/"+file)
 		base = filepath.Join(pwd, file)
 	}
 

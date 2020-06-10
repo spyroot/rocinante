@@ -21,6 +21,7 @@ type Storage interface {
 	HasKey(key string) bool
 	HasData() bool
 	GetCopy() map[string][]byte
+	Size() int
 }
 
 type FileStorage struct {
@@ -184,4 +185,13 @@ func (vs *VolatileStorage) GetCopy() map[string][]byte {
 	}
 
 	return vsCopy
+}
+
+/**
+
+ */
+func (vs *VolatileStorage) Size() int {
+	vs.mutex.Lock()
+	defer vs.mutex.Unlock()
+	return len(vs.storage)
 }

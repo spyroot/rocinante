@@ -23,16 +23,41 @@ import (
 	b64 "encoding/base64"
 
 	"../server"
-	"github.com/apex/log"
 	"github.com/golang/glog"
 )
 
 type RestClient struct {
 	endpoint map[string]bool
 	leader   string
+	verbose  bool
 }
 
 const DefaultHttpTimeout time.Duration = 250
+
+//
+//// Decode decodes base64url string to byte array
+//func Decode(data string) ([]byte,error) {
+//	data = strings.Replace(data, "-", "+", -1) // 62nd char of encoding
+//	data = strings.Replace(data, "_", "/", -1) // 63rd char of encoding
+//
+//	switch(len(data) % 4) { // Pad with trailing '='s
+//	case 0:             // no padding
+//	case 2: data+="=="  // 2 pad chars
+//	case 3:	data+="="   // 1 pad char
+//	}
+//
+//	return base64.StdEncoding.DecodeString(data)
+//}
+//
+//// Encode encodes given byte array to base64url string
+//func Encode(data []byte) string {
+//	result := base64.StdEncoding.EncodeToString(data)
+//	result = strings.Replace(result, "+", "-", -1) // 62nd char of encoding
+//	result = strings.Replace(result, "/", "_", -1) // 63rd char of encoding
+//	result = strings.Replace(result, "=", "", -1)  // Remove any trailing '='s
+//
+//	return result
+//}
 
 /**
 Return new REST client from list of string that
@@ -43,6 +68,7 @@ func NewRestClient(peers []string) (*RestClient, error) {
 	c := new(RestClient)
 	c.endpoint = map[string]bool{}
 	c.leader = ""
+	c.verbose = false
 
 	if len(peers) == 0 {
 		return nil, fmt.Errorf("peer list is empty")
@@ -122,7 +148,6 @@ func (r *RestClient) GetLeader() (*server.LeaderRespond, error) {
 		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), DefaultHttpTimeout*time.Millisecond)
-
 		resp, err := http.DefaultClient.Do(req.WithContext(ctx))
 		if err != nil {
 			glog.Errorf("Error request timeout. Retrying next peer %v", err)
@@ -136,15 +161,16 @@ func (r *RestClient) GetLeader() (*server.LeaderRespond, error) {
 			continue
 		}
 
-		glog.Infof("Respond %v", respond)
+		if r.verbose {
+			glog.Infof("Respond %v %v", respond.Leader, respond.Success)
+		}
 
 		if respond.Success {
-			glog.Infof("Discovered cluster leader %v", respond.RestBinding, respond.Leader)
+			glog.Infof("Discovered cluster leader %v cluster node id %v", respond.RestBinding, respond.Leader)
 			r.leader = respond.RestBinding
 			break
 		}
 
-		glog.Infof("Respond %v", respond)
 		cancel()
 	}
 
@@ -161,7 +187,9 @@ REST API call discover a leader and set
 current leader details.
 */
 func (r *RestClient) DiscoverLeader() error {
-
+	if r == nil {
+		return nil
+	}
 	if len(r.leader) == 0 {
 		respond, err := r.GetLeader()
 		if err != nil {
@@ -172,7 +200,7 @@ func (r *RestClient) DiscoverLeader() error {
 		}
 
 		if respond.Success {
-			log.Info(respond.RestBinding)
+			glog.Info(respond.RestBinding)
 			if !strings.Contains(server.ApiTransport, respond.RestBinding) {
 				_ = fmt.Sprintf("%s%s", server.ApiTransport, respond.RestBinding)
 			}
@@ -195,12 +223,13 @@ func (r *RestClient) Store(key string, val []byte) (bool, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), DefaultHttpTimeout*time.Millisecond)
 	defer cancel()
 
-	encodedKey := b64.StdEncoding.EncodeToString([]byte(key))
-	encodedVal := b64.StdEncoding.EncodeToString(val)
+	encodedKey := b64.URLEncoding.EncodeToString([]byte(key))
+	encodedVal := b64.URLEncoding.EncodeToString(val)
+
 	apiRequest := fmt.Sprintf("http://%s%s/%s/%s", r.leader, server.ApiSubmit, encodedKey, encodedVal)
 
-	glog.Infof("Sending request cluster req %s cluster leader %s", apiRequest, r.leader)
-	req, err := http.NewRequest("GET", apiRequest, nil)
+	glog.Infof("Sending request cluster req [%s] cluster leader [%s]", apiRequest, r.leader)
+	req, err := http.NewRequest("POST", apiRequest, nil)
 	if err != nil {
 		glog.Errorf("Error server unavailable.")
 		return false, nil
@@ -209,7 +238,6 @@ func (r *RestClient) Store(key string, val []byte) (bool, error) {
 	resp, err := http.DefaultClient.Do(req.WithContext(ctx))
 	if err != nil {
 		glog.Errorf("Error timeout request.")
-		// try to re-discover leader
 		return false, nil
 	}
 
@@ -218,7 +246,7 @@ func (r *RestClient) Store(key string, val []byte) (bool, error) {
 		return true, nil
 	}
 
-	return false, fmt.Errorf("failed store value")
+	return false, fmt.Errorf("failed store value server return %d", resp.StatusCode)
 }
 
 /**
@@ -282,7 +310,7 @@ func (r *RestClient) Get(key string) (*server.HttpValueRespond, error) {
 		return nil, nil
 	}
 
-	encodedKey := b64.StdEncoding.EncodeToString([]byte(key))
+	encodedKey := b64.URLEncoding.EncodeToString([]byte(key))
 	apiRequest := fmt.Sprintf("http://%s%s/%s", r.leader, server.ApiGet, encodedKey)
 
 	glog.Info("Sending request cluster req ", apiRequest)

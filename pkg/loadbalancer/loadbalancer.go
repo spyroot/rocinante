@@ -7,7 +7,6 @@
 package loadbalancer
 
 import (
-
 	"context"
 	"fmt"
 	"log"
@@ -62,9 +61,11 @@ type LoadBalancer struct {
 	// type of probing
 	probeType ProbeMethod
 	// algorithm and method load balance for a give service
-	method      Algorithm
+	method Algorithm
 	// cluster api end point, we will use this to send server status, load balancer hash selection etc.
 	apiEndpoits []string
+	// rest client
+	apiClient *client.RestClient
 }
 
 /**
@@ -90,7 +91,7 @@ func (lb *LoadBalancer) retryHandler(r *http.Request) int {
 /**
 
  */
-func getAddress( req *http.Request)  (*net.IP, string, error) {
+func getAddress(req *http.Request) (*net.IP, string, error) {
 
 	ip, port, err := net.SplitHostPort(req.RemoteAddr)
 	if err != nil {
@@ -123,12 +124,28 @@ func (lb *LoadBalancer) sourceHashHandler(w http.ResponseWriter, r *http.Request
 		http.Error(w, "Service not available.", http.StatusServiceUnavailable)
 	}
 
-	go func(s *ServerFarm) {
-		apiClient, _ := client.NewRestClient(lb.apiEndpoits)
-		if apiClient != nil {
-			apiClient.Store(r.RemoteAddr, []byte(s.URL.Host))
+	glog.Infof("remote address %+v", r.RemoteAddr)
+
+	// do lookup based on remote address
+	if lb.apiClient != nil {
+		resp, httpErr := lb.apiClient.Get(r.RemoteAddr)
+		if httpErr == nil && resp.Success == true {
+			glog.Infof("got hit")
 		}
-	}(s)
+	}
+
+	// we don't wait respond
+	go func(s *ServerFarm, api *client.RestClient) {
+		if api != nil && s != nil {
+			ok, err := api.Store(r.RemoteAddr, []byte(s.URL.Host))
+			if err != nil {
+				glog.Error(err.Error())
+			}
+			if ok == false {
+				glog.Error("failed to store")
+			}
+		}
+	}(s, lb.apiClient)
 
 	return s
 }
@@ -147,16 +164,16 @@ func (lb *LoadBalancer) httpHandler(w http.ResponseWriter, r *http.Request) {
 
 	// algorithm we use
 	var srv *ServerFarm
-	 if lb.method == SourceHash {
+	if lb.method == SourceHash {
 		srv = lb.sourceHashHandler(w, r)
 	} else {
-	 	 // default method round robin
-		 s, err := lb.serverPool.RoundRobin()
-		 if err != nil {
-			 http.Error(w, "Service not available.", http.StatusServiceUnavailable)
-		 }
-		 srv = s
-	 }
+		// default method round robin
+		s, err := lb.serverPool.RoundRobin()
+		if err != nil {
+			http.Error(w, "Service not available.", http.StatusServiceUnavailable)
+		}
+		srv = s
+	}
 
 	// if we found a server in pool, connect to it via reverse
 	if srv != nil {
@@ -171,7 +188,7 @@ func (lb *LoadBalancer) httpHandler(w http.ResponseWriter, r *http.Request) {
 
  */
 func isBackendAlive(u *url.URL) bool {
-	conn, err := net.DialTimeout("tcp", u.Host, 2 * time.Second)
+	conn, err := net.DialTimeout("tcp", u.Host, 2*time.Second)
 	if err != nil {
 		log.Println("Site unreachable, error: ", err)
 		return false
@@ -180,20 +197,18 @@ func isBackendAlive(u *url.URL) bool {
 	return true
 }
 
-// healthCheck runs a routine for check status of the members every 2 mins
-
 /**
 	handler for health check, we should run in
     separate go routine
- */
+*/
 func (lb *LoadBalancer) healthCheck() {
 
 	ticket := time.NewTicker(time.Minute * lb.healthTime)
 	for {
 		select {
-		case <- ticket.C:
-				glog.Infof("Starting health check...")
-				lb.serverPool.HealthCheck()
+		case <-ticket.C:
+			glog.Infof("Starting health check...")
+			lb.serverPool.HealthCheck()
 		}
 	}
 }
@@ -206,8 +221,9 @@ func (lb *LoadBalancer) healthCheck() {
     retry - number of retry before we declare server dead
     probeType - how load balancer need to probe each server
     proobeTime -
- */
-func NewLoadBalance(port int, srv []string, retry int, ptype ProbeMethod, probeDuration time.Duration, method Algorithm, api []string) (*LoadBalancer, error) {
+*/
+func NewLoadBalance(port int, srv []string, retry int, ptype ProbeMethod,
+	probeDuration time.Duration, method Algorithm, api []string) (*LoadBalancer, error) {
 
 	s := new(LoadBalancer)
 
@@ -223,6 +239,12 @@ func NewLoadBalance(port int, srv []string, retry int, ptype ProbeMethod, probeD
 	s.port = port
 	s.method = method
 	s.apiEndpoits = api
+
+	var err error
+	s.apiClient, err = client.NewRestClient(api)
+	if err != nil {
+		return s, nil
+	}
 
 	return s, nil
 }
@@ -272,9 +294,9 @@ func (lb *LoadBalancer) httpLoadBalancerHandler(serverUrl *url.URL) *httputil.Re
 
 		if retries < lb.maxRetry {
 			select {
-				case <- time.After(10 * time.Millisecond):
+			case <-time.After(10 * time.Millisecond):
 				// we send request with context
-				ctx := context.WithValue(request.Context(), Retry, retries + 1)
+				ctx := context.WithValue(request.Context(), Retry, retries+1)
 				proxy.ServeHTTP(writer, request.WithContext(ctx))
 			}
 			return
@@ -284,7 +306,7 @@ func (lb *LoadBalancer) httpLoadBalancerHandler(serverUrl *url.URL) *httputil.Re
 		attempts := lb.attemptHandler(request)
 
 		log.Printf("%s(%s) Attempting retry %d\n", request.RemoteAddr, request.URL.Path, attempts)
-		ctx := context.WithValue(request.Context(), Attempts, attempts + 1)
+		ctx := context.WithValue(request.Context(), Attempts, attempts+1)
 		lb.httpHandler(writer, request.WithContext(ctx))
 	}
 
@@ -292,8 +314,8 @@ func (lb *LoadBalancer) httpLoadBalancerHandler(serverUrl *url.URL) *httputil.Re
 }
 
 /**
-	Build list of server for a pool
- */
+Build list of server for a pool
+*/
 func (lb *LoadBalancer) buildServerPools() {
 
 	for _, server := range lb.servers {

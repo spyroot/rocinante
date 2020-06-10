@@ -112,7 +112,7 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}, verbose b
 					t.Log("Starting server", mySpec)
 				}
 				ready := make(chan interface{})
-				srv, err := NewServer(mySpec, peerSpec, p, ready)
+				srv, err := NewServer(mySpec, peerSpec, p, false, ready)
 				if err != nil {
 					glog.Fatal("Failed to start server. %v", err)
 				}
@@ -132,9 +132,10 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}, verbose b
 					glog.Error(err)
 					return
 				}
+
 			}(myNetworkSpec, networkSpec, myPort)
 		} else {
-			t.Log("can't bind server check if ports are  in use", raftBinding)
+			t.Log("can't bind server check if ports are in use", raftBinding)
 		}
 		if verbose {
 			t.Log("server started.")
@@ -151,7 +152,14 @@ func SetupTestCase(t *testing.T, config string, quit chan interface{}, verbose b
 		if verbose {
 			t.Log("Shutdown.")
 		}
+
+		for i, _ := range servers {
+			servers[i].Shutdown()
+			servers[i].rest.StopRest()
+		}
+
 		close(quit)
+
 		if verbose {
 			t.Log("teardown test case")
 		}

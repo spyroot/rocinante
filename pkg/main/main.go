@@ -143,7 +143,7 @@ func main() {
 
 	glog.Infof("Starting server on a port [%s]", myPort)
 	ready := make(chan interface{})
-	localServer, err := server.NewServer(myNetworkSpec, networkSpec, myPort, ready)
+	localServer, err := server.NewServer(myNetworkSpec, networkSpec, myPort, true, ready)
 	if err != nil {
 		glog.Fatal("Failed to start server", err)
 	}

@@ -22,7 +22,6 @@ import (
 
 	pb "../../api"
 	"../client"
-	"../io"
 	"../server"
 	"google.golang.org/grpc/connectivity"
 )
@@ -40,7 +39,7 @@ func seq() func() {
 const DefaultConfig string = "/Users/spyroot/go/src/github.com/spyroot/rocinante/config.yaml"
 
 // enable verbose log output.  might be very chatty
-const testVerbose bool = false
+const testVerbose bool = true
 
 //	mainly to make glog happy
 func usage() {}
@@ -73,25 +72,27 @@ func TestLeaderElection(t *testing.T) {
 		},
 	}
 
-	// channel waiting signal to shutdown
-	quit := make(chan interface{})
-	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, testVerbose)
-	if err != nil {
-		t.Fatal("NewServer() error during setup", err)
-	}
-
-	if len(servers) == 0 {
-		t.Errorf("zero server runing")
-	}
-	if testVerbose {
-		t.Log("Number of servers", len(servers))
-	}
+	var quit chan interface{}
+	var wait sync.WaitGroup
 
 	// execute tests
 	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
+		wait.Add(1)
+		quit = make(chan interface{})
 
-			defer seq()()
+		t.Run(tt.name, func(t *testing.T) {
+			defer wait.Done()
+			teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, testVerbose)
+			if err != nil {
+				t.Fatal("NewServer() error during setup", err)
+			}
+
+			if len(servers) == 0 {
+				t.Errorf("zero server runing")
+			}
+			if testVerbose {
+				t.Log("Number of servers", len(servers))
+			}
 
 			var converged = false
 			var currentLeader uint64 = 0
@@ -122,6 +123,8 @@ func TestLeaderElection(t *testing.T) {
 				t.Errorf("leader id (type %v), expected none zero id", currentLeader)
 			}
 
+			time.Sleep(10 * time.Second)
+
 			// we check that only one server is leader
 			numLeaders := 0
 			var convergedTerm uint64 = 0
@@ -130,7 +133,6 @@ func TestLeaderElection(t *testing.T) {
 				if isLeader == true {
 					numLeaders++
 				}
-
 				if convergedTerm == 0 {
 					convergedTerm = term
 				} else {
@@ -139,31 +141,19 @@ func TestLeaderElection(t *testing.T) {
 					}
 				}
 			}
-
 			if numLeaders > 1 {
 				t.Errorf("expected single leader in the cluster")
 			}
-
-			// end
+			for _, s := range servers {
+				t.Log(s.PeerStatus())
+			}
+			teardownTestCase(t)
 		})
 
-		teardownTestCase(t)
+		<-quit
 		// when all test are finished teardown closes a channels.
 	}
-	// wait all test to finish
-	<-quit
-
-	if testVerbose {
-		t.Log("Shutdown all servers.")
-	}
-
-	// shutdown all
-	for _, s := range servers {
-		s.Shutdown()
-	}
-
-	// we need wait a bit so all port released back to tcp stack
-	time.Sleep(2 * time.Second)
+	wait.Wait()
 }
 
 /**
@@ -189,23 +179,26 @@ func TestLeaderElection2(t *testing.T) {
 		},
 	}
 
-	// channel waiting signal to shutdown
-	quit := make(chan interface{})
-	teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, testVerbose)
-	if err != nil {
-		t.Fatal("NewServer() error during setup", err)
-	}
-
-	time.Sleep(2 * time.Second)
-	if testVerbose {
-		t.Log("Number of servers", len(servers))
-	}
+	var wait sync.WaitGroup
 
 	// execute tests
 	for _, tt := range tests {
 
+		quit := make(chan interface{})
+		teardownTestCase, servers, err := server.SetupTestCase(t, DefaultConfig, quit, testVerbose)
+		if err != nil {
+			t.Fatal("NewServer() error during setup", err)
+		}
+		if len(servers) == 0 {
+			t.Errorf("zero server runing")
+		}
+		if testVerbose {
+			t.Log("Number of servers", len(servers))
+		}
+
+		wait.Add(1)
 		t.Run(tt.name, func(t *testing.T) {
-			defer seq()()
+			defer wait.Done()
 
 			var converged = false
 			var currentLeader uint64 = 0
@@ -261,6 +254,7 @@ func TestLeaderElection2(t *testing.T) {
 				t.Errorf("expected single leader in the cluster")
 			}
 
+			time.Sleep(2 * time.Second)
 			// re-election, shutdown a node
 			for _, s := range servers {
 				_, _, isLeader := s.RaftState().Status()
@@ -270,6 +264,7 @@ func TestLeaderElection2(t *testing.T) {
 				}
 			}
 
+			time.Sleep(2 * time.Second)
 			// re check who is leader now, we should have two server and leader re-elected
 			oldLeader := currentLeader
 			currentLeader = 0
@@ -296,22 +291,17 @@ func TestLeaderElection2(t *testing.T) {
 			if currentLeader == 0 {
 				t.Errorf("leader id (type %v), expected none zero id", currentLeader)
 			}
+
+			time.Sleep(2 * time.Second)
 			// end
 		})
 
+		wait.Wait()
 		teardownTestCase(t)
-		// when all test are finished teardown closes a channels.
+		<-quit
 	}
-	// wait all test to finish
-	<-quit
 
 	t.Log("Shutdown all servers.")
-	// shutdown all
-	for _, s := range servers {
-		s.Shutdown()
-	}
-
-	time.Sleep(2 * time.Second)
 }
 
 /**
@@ -1094,29 +1084,30 @@ func TestConnectReconnect(t *testing.T) {
 				t.Log("Shutdown all servers.")
 			}
 
-			for _, s := range servers {
-				s.Shutdown()
-			}
+			//for _, s := range servers {
+			//	s.StartRest()
+			//	s.Shutdown()
+			//}
 
-			// wait for all port to be released
-			for released := 0; released <= len(servers); {
-				for _, s := range servers {
-					if io.CheckSocket(s.ServerBind(), "tcp") {
-						t.Log("server released port ", s.ServerBind())
-						released++
-					}
-				}
-			}
-
-			for released := 0; released <= len(servers); {
-				for _, s := range servers {
-					if io.CheckSocket(s.RESTEndpoint().RestNetworkBind, "tcp") {
-						t.Log("server released port ", s.ServerBind())
-						released++
-					}
-				}
-			}
-			servers = nil
+			//// wait for all port to be released
+			//for released := 0; released <= len(servers); {
+			//	for _, s := range servers {
+			//		if io.CheckSocket(s.ServerBind(), "tcp") {
+			//			t.Log("server released port ", s.ServerBind())
+			//			released++
+			//		}
+			//	}
+			//}
+			//
+			//for released := 0; released <= len(servers); {
+			//	for _, s := range servers {
+			//		if io.CheckSocket(s.RESTEndpoint().RestNetworkBind, "tcp") {
+			//			t.Log("server released port ", s.ServerBind())
+			//			released++
+			//		}
+			//	}
+			//}
+			//servers = nil
 		})
 
 		<-quit

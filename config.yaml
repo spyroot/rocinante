@@ -22,6 +22,12 @@ artifact:
       - address: 127.0.0.1
         rest: 8001
         grpc: 35001
+      - address: 127.0.0.1
+        rest: 8002
+        grpc: 35002
+      - address: 127.0.0.1
+        rest: 8003
+        grpc: 35003
     servers:
       - address: 127.0.0.1
         port: 8887
