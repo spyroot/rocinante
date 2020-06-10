@@ -59,7 +59,7 @@ func main() {
 	}
 
 	//func NewLoadBalance(port int, srv [] string, retry int, ptype ProbeMethod, probeDuration time.Duration, method Algorithm) *LoadBalancer {
-	loadBalance, _ := loadbalancer.NewLoadBalance(9000, farm, 3, loadbalancer.ProbeHttp, 2, loadbalancer.SourceHash, apiRestEndpoints)
+	loadBalance, _ := loadbalancer.NewLoadBalance(artifact.Service.Pool.Bind, farm, 3, loadbalancer.ProbeHttp, 2, loadbalancer.SourceHash, apiRestEndpoints)
 	loadBalance.Serve()
 
 }

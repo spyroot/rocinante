@@ -38,6 +38,7 @@ type Pool struct {
 	Name    string   `yaml:"name"`
 	Api     []Api    `yaml:"api"`
 	Servers []Server `yaml:"servers"`
+	Bind    string   `yaml:"bind"`
 }
 
 /**

@@ -53,7 +53,7 @@ type LoadBalancer struct {
 	// server status
 	isDead bool
 	// service port
-	port int
+	//port int
 	//
 	maxRetry int
 	//
@@ -66,6 +66,8 @@ type LoadBalancer struct {
 	apiEndpoits []string
 	// rest client
 	apiClient *client.RestClient
+	//
+	bind string
 }
 
 /**
@@ -223,7 +225,7 @@ func (lb *LoadBalancer) healthCheck() {
     probeType - how load balancer need to probe each server
     proobeTime -
 */
-func NewLoadBalance(port int, srv []string, retry int, ptype ProbeMethod,
+func NewLoadBalance(bind string, srv []string, retry int, ptype ProbeMethod,
 	probeDuration time.Duration, method Algorithm, api []string) (*LoadBalancer, error) {
 
 	s := new(LoadBalancer)
@@ -237,7 +239,8 @@ func NewLoadBalance(port int, srv []string, retry int, ptype ProbeMethod,
 	s.maxRetry = retry
 	s.probeType = ptype
 	s.healthTime = probeDuration
-	s.port = port
+	s.bind = bind
+	//s.port = port
 	s.method = method
 	s.apiEndpoits = api
 
@@ -272,11 +275,11 @@ func (lb *LoadBalancer) StartLoadBalancer() {
 
 	// create http server
 	server := http.Server{
-		Addr:    fmt.Sprintf(":%d", lb.port),
+		Addr:    lb.bind,
 		Handler: http.HandlerFunc(lb.httpHandler),
 	}
 
-	glog.Infof("Load Balancer started at :%d\n", lb.port)
+	glog.Infof("Load Balancer started at :%d\n", lb.bind)
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
