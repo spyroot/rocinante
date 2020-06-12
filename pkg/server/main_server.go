@@ -9,8 +9,13 @@ import (
 	"log"
 	"math/rand"
 	"net"
+	"net/http"
 	"sync"
 	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	pb "github.com/spyroot/rocinante/api"
 	"github.com/spyroot/rocinante/pkg/color"
@@ -19,6 +24,42 @@ import (
 	"github.com/golang/glog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/connectivity"
+)
+
+var (
+	MetricVoteRx = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "rocinante_vote_rx_total",
+		Help: "The total number of vote events",
+	})
+	MetricAppendRx = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "rocinante_append_rx_total",
+		Help: "The total number of append events",
+	})
+	MetricAppendTx = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "rocinante_append_tx_total",
+		Help: "The total number of append tx events",
+	})
+	MetricVoteTx = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "rocinante_vote_tx_total",
+		Help: "The total number of vote tx events",
+	})
+	MetricCommitted = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "rocinante_committed_total",
+		Help: "The total number of vote tx events",
+	})
+	MetricSubmited = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "rocinante_submitted_total",
+		Help: "The total number of submit request events",
+	})
+
+	voteHistogram = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "vote_average_time",
+		Help: "The temperature of the frog pond.",
+	})
+	appedHistogram = prometheus.NewHistogram(prometheus.HistogramOpts{
+		Name: "append_average_time",
+		Help: "The temperature of the frog pond.",
+	})
 )
 
 // TODO add to peer list respond with server spec for auto discovery.
@@ -50,6 +91,8 @@ type ServerSpec struct {
 	Basedir string
 	// base where to spool logs
 	LogDir string
+	// metric bind
+	MetricBind string
 }
 
 /*
@@ -62,6 +105,8 @@ type ApiEndpoints struct {
 	RestNetworkBind string
 	// grpc client side end point ip:port
 	GrpcNetworkBind string
+	// metric service
+	MetricBind string
 }
 
 type PeerStatus struct {
@@ -178,6 +223,7 @@ func (s *Server) RequestVoteCall(ctx context.Context, vote *pb.RequestVote) (*pb
 	}
 
 	s.voteRx++
+	MetricVoteRx.Inc()
 
 	glog.Infof("[rpc server handler] rx vote for a candidate %v", vote.CandidateId)
 	//time.Sleep(time.Duration(1 + rand.Intn(5)) * time.Millisecond)
@@ -187,11 +233,15 @@ func (s *Server) RequestVoteCall(ctx context.Context, vote *pb.RequestVote) (*pb
 		return nil, fmt.Errorf("cm uninitilized. %d", vote.CandidateId)
 	}
 
+	start := time.Now()
 	rep, err := s.raftState.RequestVote(vote)
 	if err != nil {
 		log.Printf("[rpc server:] vote failed %v", err)
 		return nil, err
 	}
+	elapsed := time.Since(start)
+	voteHistogram.Observe(float64(elapsed))
+
 	return &pb.RequestVoteReply{
 		Term:        rep.Term,
 		VoteGranted: rep.VoteGranted,
@@ -244,6 +294,7 @@ func (s *Server) ReadCommits() {
 
 			// store and check.
 			s.db.Set(c.Command.Key, c.Command.Value)
+			MetricCommitted.Inc()
 
 			buf := make([]byte, 8)
 			binary.LittleEndian.PutUint64(buf, c.Index)
@@ -277,6 +328,7 @@ func (s *Server) AppendEntriesCall(ctx context.Context, req *pb.AppendEntries) (
 	}
 
 	s.appendRx++
+	MetricAppendRx.Inc()
 
 	glog.Infof("[rpc server handler] rx append entries from a leader [%v] term [%v]", req.LeaderId, req.Term)
 
@@ -293,7 +345,10 @@ func (s *Server) AppendEntriesCall(ctx context.Context, req *pb.AppendEntries) (
 	//default:
 	//}
 
+	start := time.Now()
 	rep, err := s.raftState.AppendEntries(req)
+	elapsed := time.Since(start)
+	appedHistogram.Observe(float64(elapsed))
 
 	// update last leader seen
 	s.lock.Lock()
@@ -376,6 +431,7 @@ func (s *Server) GetValue(ctx context.Context, key string) (*GetValueRespond, er
 func (s *Server) SubmitCall(ctx context.Context, req *pb.SubmitEntry) (*pb.SubmitReply, error) {
 
 	s.submitRx++
+	MetricSubmited.Inc()
 
 	if s == nil {
 		return nil, fmt.Errorf("server uninitialized")
@@ -552,6 +608,7 @@ func NewServer(spec ServerSpec, peers []ServerSpec, port string, restOn bool, re
 
 	//
 	go s.ReadCommits()
+	s.metric(s.ready)
 
 	return s, err
 }
@@ -802,6 +859,7 @@ func (s *Server) RemoteCall(peerID uint64, args interface{}) (interface{}, error
 				return nil, fmt.Errorf("wrong vote replay message")
 			}
 
+			MetricVoteTx.Inc()
 			return &rr, nil
 		} else if req, ok := args.(*pb.AppendEntries); ok {
 			entry := &pb.AppendEntries{
@@ -813,6 +871,8 @@ func (s *Server) RemoteCall(peerID uint64, args interface{}) (interface{}, error
 				LeaderCommit: req.LeaderCommit,
 			}
 			glog.Infof("[rpc server] sending rpc [append entries msg] : id %v to %v\n", s.serverBind, peer.Target())
+			MetricAppendTx.Inc()
+
 			return c.AppendEntriesCall(ctx, entry)
 		} else {
 			glog.Errorf("unknown message %T", args)
@@ -1123,9 +1183,7 @@ func (s *Server) startStatCollector() {
 	if s == nil {
 		return
 	}
-
 	//	oldVote := 0
-
 	go func() {
 		ticker := time.NewTicker(1 * time.Second)
 		defer ticker.Stop()
@@ -1135,6 +1193,36 @@ func (s *Server) startStatCollector() {
 			<-ticker.C
 			//delta := s.voteRx
 			//s.voteRx = 0
+		}
+	}()
+}
+
+//func recordMetrics() {
+//	go func() {
+//		for {
+//			opsProcessed.Inc()
+//			time.Sleep(2 * time.Second)
+//		}
+//	}()
+//}
+
+func (s *Server) metric(ready <-chan interface{}) {
+
+	if s == nil {
+		return
+	}
+
+	glog.Infof("metric started")
+	go func() {
+		for {
+			glog.Infof("port 2112 started")
+			http.Handle("/metrics", promhttp.Handler())
+			http.ListenAndServe(s.serverSpec.MetricBind, nil)
+		}
+		select {
+		case <-s.quit:
+			glog.Infof("metric shuting down")
+			return
 		}
 	}()
 }
