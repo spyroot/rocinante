@@ -16,6 +16,7 @@ type Controller struct {
 	Address string `yaml:"address"`
 	Port    string `yaml:"port"`
 	Rest    string `yaml:"rest"`
+	Metric  string `yaml:"metric"`
 	WWWRoot string `yaml:"wwwroot"`
 }
 
