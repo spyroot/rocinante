@@ -3,36 +3,40 @@ artifact:
   cluster:
     name: test
     controllers:
-      - address: 127.0.0.1
+      - address: 192.168.254.48
         port: 35001
         rest: 8001
+        metric: :2112
         wwwroot: /Users/spyroot/go/src/github.com/spyroot/rocinante/pkg/template/
-      - address: 127.0.0.1
+      - address: 192.168.254.48
         port: 35002
         rest: 8002
+        metric: :2113
         wwwroot: /Users/spyroot/go/src/github.com/spyroot/rocinante/pkg/template/
-      - address: 127.0.0.1
+      - address: 192.168.254.48
         port: 35003
         rest: 8003
+        metric: :2114
         wwwroot: /Users/spyroot/go/src/github.com/spyroot/rocinante/pkg/template/
   pool:
     name: test
+    bind: 0.0.0.0:9001
     # we indicate only one ip and let rest client discover cluster leader
     api:
-      - address: 127.0.0.1
+      - address: 192.168.254.48
         rest: 8001
         grpc: 35001
-      - address: 127.0.0.1
+      - address: 192.168.254.48
         rest: 8002
         grpc: 35002
-      - address: 127.0.0.1
+      - address: 192.168.254.48
         rest: 8003
         grpc: 35003
     servers:
-      - address: 127.0.0.1
+      - address: 192.168.254.48
         port: 8887
-      - address: 127.0.0.1
+      - address: 192.168.254.48
         port: 8888
-      - address: 127.0.0.1
+      - address: 192.168.254.48
         port: 8889
   global:
