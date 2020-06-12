@@ -425,6 +425,71 @@ artifact:
   global:
 ```
 
-![Image of webserver](https://github.com/spyroot/rocinante/blob/master/images/web.png)
+## Usags
 
-## Sniffer app
+    * First we start prometheus server.
+ ```
+    #shell prometheus --config.file=$(GOPATH)/go/src/github.com/spyroot/rocinante/prometheus.yml
+ ```
+    
+    Than we can start all server.
+   ```
+    shell# ./rocinnante /Users/spyroot/go/src/github.com/spyroot/rocinante/config.yaml
+   ```
+    Note you can start all server on same host but make sure you have different ports.
+   
+    We can check metric directly.  This metric server used by prometheus
+   ```
+    #shell curl http://localhost:2112/metrics
+   ```
+    We can check build in web server open http://localhost:8001
+
+Example metric
+
+````
+ curl http://localhost:2112/metrics
+rocinante_append_rx_total 901
+# HELP rocinante_append_tx_total The total number of append tx events
+# TYPE rocinante_append_tx_total counter
+rocinante_append_tx_total 108
+# HELP rocinante_committed_total The total number of vote tx events
+# TYPE rocinante_committed_total counter
+rocinante_committed_total 0
+# HELP rocinante_submitted_total The total number of submit request events
+# TYPE rocinante_submitted_total counter
+rocinante_submitted_total 0
+# HELP rocinante_vote_rx_total The total number of vote events
+# TYPE rocinante_vote_rx_total counter
+rocinante_vote_rx_total 27
+# HELP rocinante_vote_tx_total The total number of vote tx events
+# TYPE rocinante_vote_tx_total counter
+rocinante_vote_tx_total 9
+```
+
+![Image of webserver](https://github.com/spyroot/rocinante/blob/master/doc/images/metric.png)
+
+## Sniffer usage.
+
+Note you need root user.  I've tested Mac OS and linux.  Make sure libpcap installed.
+
+```
+ sudo ./sniffer --config /Users/spyroot/go/src/github.com/spyroot/rocinante/config.yaml capture en0
+```
+
+
+When you start a sniffer, you should see sniffer serialize everything a cluster.
+
+```
+I0610 15:51:29.069630    8174 restclient.go:230] Sending request 
+cluster req [http://192.168.254.48:8002/submit/MTEzNDczMTMxNjYwNTU4ODc2ODU=/Df-DAgEC_4QAAf-CAABH_
+4EDAQEDSGRyAf-CAAEFAQdTcmNQb3J0AQwAAQdEc3RQb3J0AQwAAQVTcmNJcAEMAAEFRHN0SXABDAABBVByb3RvAQwAAABq_4QAAgEFM
+zk1NjABBDgwMDIBDjE3Mi4xNi4xNDkuMjIzAQ4xOTIuMTY4LjI1NC40OAEDVENQAAEEODAwMgEFMzk1NjABDjE5Mi4xNjguMjU0LjQ4AQ4x
+NzIuMTYuMTQ5LjIyMwEDVENQAA==] cluster leader [192.168.254.48:8002]
+```
+
+## Screenshoots
+
+![Image of webserver](https://github.com/spyroot/rocinante/blob/master/doc/images/web.png)
+
+## Flow 
+![Image of webserver](https://github.com/spyroot/rocinante/blob/master/doc/images/flow.png)
