@@ -1,16 +1,26 @@
 # High level
 
-The primary objective of the project develops a distributed system and API abstraction to support 
-TCP/UDP flow synchronization between different data centers and cluster members, 
-the status of the application.
+The primary objective of the Rocinante project provides a distributed system and API abstraction on top to 
+support TCP/UDP flow state synchronization between different data centers and cluster members. In essence, 
+it allows the developer to leverage REST or GRPC API for an application status of the application.  
+There is many use case under that fall category,  Firewall TCP/UDP state, DPI classification state, 
+load balancer server selection hash,  heartbeat liveness monitoring for the server farm.
 
-For example, if we have a set of load balancer that need synchronize that current state.
- 
+For example, if we have a set of load balancer that need synchronize that current state. 
 The system supports traditional distribute key-value storage, but the primary motivation provides an 
 abstract and API layer that can be easily consumed by a different application 
 that requires fast synchronization. 
 
-
+There are two application written on top show case capabilities. 
+ 
+    * A load balancer that serialize source hash selecton.  For example if load balancer
+      choosen server A from server farm pool for a given client. It will serialize decision to 
+      cluster any other load balancer will do a check and if given client already in cluster load balancer
+      B and C will select same server from server farm pool.
+      
+    *  A packet sniffer that uses libpcap framework in order to capature raw stream 
+       and serialize to a cluster. Current implementaton support standart pcap type of filters.
+    
 ## Overview. 
 
 * Rocinante's system consists set of controllers node that forms a cluster. A cluster provider the 
