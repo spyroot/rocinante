@@ -446,7 +446,7 @@ artifact:
 
 Example metric
 
-````
+```
  curl http://localhost:2112/metrics
 rocinante_append_rx_total 901
 # HELP rocinante_append_tx_total The total number of append tx events
@@ -487,9 +487,10 @@ zk1NjABBDgwMDIBDjE3Mi4xNi4xNDkuMjIzAQ4xOTIuMTY4LjI1NC40OAEDVENQAAEEODAwMgEFMzk1N
 NzIuMTYuMTQ5LjIyMwEDVENQAA==] cluster leader [192.168.254.48:8002]
 ```
 
-## Screenshoots
+## Screenshots
 
 ![Image of webserver](https://github.com/spyroot/rocinante/blob/master/doc/images/web.png)
 
-## Flow 
+## Classifier flows 
+
 ![Image of webserver](https://github.com/spyroot/rocinante/blob/master/doc/images/flow.png)
