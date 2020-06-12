@@ -108,6 +108,7 @@ func main() {
 			RaftNetworkBind: raftBinding,
 			RestNetworkBind: restBinding,
 			GrpcNetworkBind: raftBinding,
+			MetricBind:      controllers[i].Metric,
 			Basedir:         artifact.BaseDir,
 			LogDir:          "",
 		}
@@ -124,6 +125,7 @@ func main() {
 						RaftNetworkBind: raftBind,
 						RestNetworkBind: restBind,
 						GrpcNetworkBind: raftBind,
+						MetricBind:      controllers[i].Metric,
 					}
 					networkSpec = append(networkSpec, spec)
 				}
